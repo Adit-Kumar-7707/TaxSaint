@@ -4,7 +4,8 @@ TaxSaint is organized into tax calculation, data input, database management, fro
 
 
 https://github.com/Adit-Kumar-7707/TaxSaint.git
-
+File Structure
+```text
 TaxSaint/
 ├── .gitignore
 ├── README.md
