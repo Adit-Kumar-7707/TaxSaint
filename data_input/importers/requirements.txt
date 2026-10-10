@@ -1,0 +1,6 @@
+# Add Python dependencies here.
+pandas
+openpyxl
+xlrd
+requests
+pytest
