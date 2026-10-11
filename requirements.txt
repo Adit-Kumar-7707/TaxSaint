@@ -1,1 +1,6 @@
 # Add Python dependencies here.
+
+fastapi # for backent api
+sqlalchemy # to work python and db together
+psycopg[binary] #postgres driver 
+python-dotenv # to load environment variables from .env file

@@ -11,7 +11,7 @@ CREATE TABLE users (
     worker_type  VARCHAR(10) NOT NULL
                  CHECK (worker_type IN ('SALARIED', 'BUSINESS'))
 );
-
+ 
 
 -- 2. Income records
 CREATE TABLE income (
@@ -104,3 +104,40 @@ VALUES
 (1600000, 2000000, 20),
 (2000000, 2400000, 25),
 (2400000, NULL,    30); -- initial tax slabs
+
+
+-- Indexes 
+
+CREATE INDEX idx_income_user_id
+ON income(user_id);
+
+CREATE INDEX idx_income_party_name
+ON income(party_name);
+
+CREATE INDEX idx_expenses_user_id
+ON expenses(user_id);
+
+CREATE INDEX idx_expenses_party_name
+ON expenses(party_name);
+
+CREATE INDEX idx_expenses_amount
+ON expenses(amount);
+
+CREATE INDEX idx_bank_user_id
+ON bank_transactions(user_id);
+
+CREATE INDEX idx_bank_party_name
+ON bank_transactions(party_name);
+
+CREATE INDEX idx_bank_amount
+ON bank_transactions(amount);
+
+CREATE INDEX idx_bank_transaction_date
+ON bank_transactions(transaction_date);
+
+CREATE INDEX idx_tax_results_user_id
+ON tax_results(user_id);
+
+CREATE INDEX idx_fraud_alerts_user_id
+ON fraud_alerts(user_id);
+
