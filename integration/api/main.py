@@ -78,3 +78,28 @@ def create_income(income: IncomeCreate):
             status_code=500,
             detail="Unable to save income",
         ) from error
+    
+@app.get("/income")
+def get_income(user_id: int):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                text("""
+                    SELECT income_id, user_id, source, party_name,
+                           amount, income_date
+                    FROM income
+                    WHERE user_id = :user_id
+                    ORDER BY income_date DESC
+                """),
+                {"user_id": user_id},
+            )
+
+            records = result.mappings().all()
+
+        return {"income": [dict(row) for row in records]}
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch income records",
+        ) from error
