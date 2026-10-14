@@ -103,3 +103,28 @@ def get_income(user_id: int):
             status_code=500,
             detail="Unable to fetch income records",
         ) from error
+
+@app.get("/expenses")
+def get_expenses(user_id: int):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                text("""
+                    SELECT expense_id, user_id, category,
+                           party_name, amount, expense_date
+                    FROM expenses
+                    WHERE user_id = :user_id
+                    ORDER BY expense_date DESC
+                """),
+                {"user_id": user_id},
+            )
+
+            records = result.mappings().all()
+
+        return {"expenses": [dict(row) for row in records]}
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch expense records",
+        ) from error
