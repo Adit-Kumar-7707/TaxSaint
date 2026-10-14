@@ -1,11 +1,11 @@
 """TaxSaint API entry point."""
-
-
-from fastapi import FastAPI
-from sqlalchemy import inspect
-from sqlalchemy import text
+from datetime import date
+from decimal import Decimal
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from database_manager.connection import engine
-
 app = FastAPI(title="TaxSaint API")
 
 
@@ -31,3 +31,50 @@ def health_check():
             "status": "unhealthy",
             "database": "disconnected"
         }
+    
+class IncomeCreate(BaseModel):
+    user_id: int
+    source: str = Field(min_length=1, max_length=50)
+    party_name: str = Field(min_length=1, max_length=100)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    income_date: date
+
+@app.post("/income", status_code=201)
+def create_income(income: IncomeCreate):
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(
+                text("""
+                    INSERT INTO income
+                    (user_id, source, party_name, amount, income_date)
+                    VALUES
+                    (:user_id, :source, :party_name, :amount, :income_date)
+                    RETURNING income_id
+                """),
+                {
+                    "user_id": income.user_id,
+                    "source": income.source,
+                    "party_name": income.party_name,
+                    "amount": income.amount,
+                    "income_date": income.income_date,
+                },
+            )
+
+            income_id = result.scalar_one()
+
+        return {
+            "message": "Income added successfully",
+            "income_id": income_id,
+        }
+
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id or income data",
+        ) from error
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save income",
+        ) from error
