@@ -177,3 +177,59 @@ def create_expense(expense: ExpenseCreate):
             status_code=500,
             detail="Unable to save expense",
         ) from error
+
+class BankTransactionCreate(BaseModel):
+    user_id: int
+    party_name: str = Field(min_length=1, max_length=100)
+    transaction_type: str
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    transaction_date: date
+
+
+@app.post("/bank-transactions", status_code=201)
+def create_bank_transaction(transaction: BankTransactionCreate):
+    transaction_type = transaction.transaction_type.upper()
+
+    if transaction_type not in ("INCOME", "EXPENSE"):
+        raise HTTPException(
+            status_code=422,
+            detail="transaction_type must be INCOME or EXPENSE",
+        )
+
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(
+                text("""
+                    INSERT INTO bank_transactions
+                    (user_id, party_name, transaction_type, amount, transaction_date)
+                    VALUES
+                    (:user_id, :party_name, :transaction_type, :amount, :transaction_date)
+                    RETURNING transaction_id
+                """),
+                {
+                    "user_id": transaction.user_id,
+                    "party_name": transaction.party_name,
+                    "transaction_type": transaction_type,
+                    "amount": transaction.amount,
+                    "transaction_date": transaction.transaction_date,
+                },
+            )
+
+            transaction_id = result.scalar_one()
+
+        return {
+            "message": "Bank transaction added successfully",
+            "transaction_id": transaction_id,
+        }
+
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id or transaction data",
+        ) from error
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save bank transaction",
+        ) from error
