@@ -87,3 +87,34 @@ def save_duplicate_alerts(user_id: int):
                     saved_alerts.append(alert_id)
 
     return saved_alerts
+
+
+def find_income_mismatches(user_id: int):
+    with engine.connect() as connection:
+        result = connection.execute(
+            text("""
+                SELECT
+                    i.income_id,
+                    i.user_id,
+                    i.party_name,
+                    i.amount AS recorded_income,
+                    i.income_date,
+                    b.transaction_id,
+                    b.amount AS bank_amount,
+                    b.transaction_date,
+                    ABS(i.amount - b.amount) AS difference_amount
+                FROM income i
+                JOIN bank_transactions b
+                  ON i.user_id = b.user_id
+                 AND LOWER(TRIM(i.party_name)) =
+                     LOWER(TRIM(b.party_name))
+                 AND i.income_date = b.transaction_date
+                WHERE i.user_id = :user_id
+                  AND b.transaction_type = 'INCOME'
+                  AND i.amount <> b.amount
+                ORDER BY i.income_date DESC
+            """),
+            {"user_id": user_id},
+        )
+
+        return [dict(row) for row in result.mappings().all()]

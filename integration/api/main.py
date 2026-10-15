@@ -10,6 +10,12 @@ from database_manager.repositories.fraud_repository import (
     find_duplicate_expenses,
     save_duplicate_alerts,
 )
+from database_manager.repositories.fraud_repository import (
+    find_duplicate_expenses,
+    save_duplicate_alerts,
+    find_income_mismatches,
+)
+
 
 
 app = FastAPI(title="TaxSaint API")
@@ -301,4 +307,22 @@ def scan_duplicate_expenses(user_id: int):
         raise HTTPException(
             status_code=500,
             detail="Unable to save duplicate expense alerts",
+        ) from error
+
+
+@app.get("/fraud/income-mismatches")
+def get_income_mismatches(user_id: int):
+    try:
+        mismatches = find_income_mismatches(user_id)
+
+        return {
+            "user_id": user_id,
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to detect income mismatches",
         ) from error
