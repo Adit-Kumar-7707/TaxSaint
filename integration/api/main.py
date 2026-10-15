@@ -15,6 +15,13 @@ from database_manager.repositories.fraud_repository import (
     save_duplicate_alerts,
     find_income_mismatches,
 )
+from database_manager.repositories.fraud_repository import (
+    find_duplicate_expenses,
+    save_duplicate_alerts,
+    find_income_mismatches,
+    save_income_mismatch_alerts,
+)
+
 
 
 
@@ -325,4 +332,63 @@ def get_income_mismatches(user_id: int):
         raise HTTPException(
             status_code=500,
             detail="Unable to detect income mismatches",
+        ) from error
+
+
+@app.post("/fraud/income-mismatches/scan")
+def scan_income_mismatches(user_id: int):
+    try:
+        alert_ids = save_income_mismatch_alerts(user_id)
+
+        return {
+            "message": "Income mismatch scan completed",
+            "user_id": user_id,
+            "alerts_created": len(alert_ids),
+            "alert_ids": alert_ids,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save income mismatch alerts",
+        ) from error
+
+
+@app.get("/fraud/alerts")
+def get_fraud_alerts(user_id: int):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                text("""
+                    SELECT
+                        alert_id,
+                        user_id,
+                        fraud_type,
+                        transaction_source,
+                        transaction_id,
+                        matched_source,
+                        matched_transaction_id,
+                        difference_amount,
+                        reason,
+                        status,
+                        detected_at
+                    FROM fraud_alerts
+                    WHERE user_id = :user_id
+                    ORDER BY detected_at DESC
+                """),
+                {"user_id": user_id},
+            )
+
+            alerts = result.mappings().all()
+
+        return {
+            "user_id": user_id,
+            "count": len(alerts),
+            "alerts": [dict(alert) for alert in alerts],
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch fraud alerts",
         ) from error
