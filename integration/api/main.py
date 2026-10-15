@@ -21,7 +21,9 @@ from database_manager.repositories.fraud_repository import (
     find_income_mismatches,
     save_income_mismatch_alerts,
 )
-
+import json
+import subprocess
+from pathlib import Path
 
 
 
@@ -446,4 +448,245 @@ def update_fraud_alert_status(
         raise HTTPException(
             status_code=500,
             detail="Unable to update fraud alert",
+        ) from error
+
+
+@app.post("/tax/calculate")
+def calculate_user_tax(user_id: int, financial_year: str = "2026-27"):
+    # Financial year ki date range
+    year_ranges = {
+        "2026-27": (date(2026, 4, 1), date(2027, 4, 1)),
+    }
+
+    if financial_year not in year_ranges:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported financial year",
+        )
+
+    start_date, end_date = year_ranges[financial_year]
+
+    try:
+        with engine.connect() as connection:
+            # User ka worker type
+            user = connection.execute(
+                text("""
+                    SELECT worker_type
+                    FROM users
+                    WHERE user_id = :user_id
+                """),
+                {"user_id": user_id},
+            ).mappings().one_or_none()
+
+            if user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Demo tax rules
+            rules = connection.execute(
+                text("""
+                    SELECT standard_deduction, rebate_limit, cess_rate
+                    FROM tax_rules
+                    WHERE financial_year = :financial_year
+                      AND regime = 'NEW'
+                """),
+                {"financial_year": financial_year},
+            ).mappings().one_or_none()
+
+            if rules is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Tax rules not found for this financial year",
+                )
+
+            # Tax slabs
+            slabs = connection.execute(
+                text("""
+                    SELECT lower_limit, upper_limit, rate
+                    FROM tax_slabs
+                    ORDER BY lower_limit
+                """)
+            ).mappings().all()
+
+            if not slabs:
+                raise HTTPException(status_code=500, detail="Tax slabs not found")
+
+            # Financial year ke andar total income
+            income = connection.execute(
+                text("""
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM income
+                    WHERE user_id = :user_id
+                      AND income_date >= :start_date
+                      AND income_date < :end_date
+                """),
+                {
+                    "user_id": user_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+            ).scalar_one()
+
+            # Financial year ke andar total expenses
+            expenses = connection.execute(
+                text("""
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM expenses
+                    WHERE user_id = :user_id
+                      AND expense_date >= :start_date
+                      AND expense_date < :end_date
+                """),
+                {
+                    "user_id": user_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+            ).scalar_one()
+
+        # C++ engine ke liye input taiyar karo
+        input_lines = [
+            f"RULE|standard_deduction|{rules['standard_deduction']}",
+            f"RULE|rebate_limit|{rules['rebate_limit']}",
+            f"RULE|cess_rate|{rules['cess_rate']}",
+        ]
+
+        for slab in slabs:
+            upper = (
+                str(slab["upper_limit"])
+                if slab["upper_limit"] is not None
+                else ""
+            )
+            input_lines.append(
+                f"SLAB|{slab['lower_limit']}|{upper}|{slab['rate']}"
+            )
+
+        input_lines.append(
+            f"USER|{user_id}|{user['worker_type']}|{income}|{expenses}"
+        )
+
+        engine_path = (
+            Path(__file__).resolve().parents[2]
+            / "tax_calculation"
+            / "tax_engine"
+            / "calculatetax"
+        )
+
+        if not engine_path.is_file():
+            raise HTTPException(
+                status_code=500,
+                detail="C++ tax engine executable not found. Compile it first.",
+            )
+
+        result = subprocess.run(
+            [str(engine_path)],
+            input="\n".join(input_lines) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=422,
+                detail="C++ tax engine rejected the input or rules",
+            )
+
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise HTTPException(
+                status_code=500,
+                detail="Invalid response from C++ tax engine",
+            ) from error
+
+        if not output.get("ok") or not output.get("results"):
+            raise HTTPException(
+                status_code=422,
+                detail="Tax calculation failed",
+            )
+
+        tax = output["results"][0]
+
+        # Result database mein save karo
+        with engine.begin() as connection:
+            saved = connection.execute(
+                text("""
+                    INSERT INTO tax_results (
+                        user_id, gross_income, expenses, taxable_income,
+                        tax_before_cess, cess, total_tax
+                    )
+                    VALUES (
+                        :user_id, :gross_income, :expenses, :taxable_income,
+                        :tax_before_cess, :cess, :total_tax
+                    )
+                    RETURNING result_id, calculated_at
+                """),
+                {
+                    "user_id": user_id,
+                    "gross_income": tax["gross_income"],
+                    "expenses": tax["expenses"],
+                    "taxable_income": tax["taxable_income"],
+                    "tax_before_cess": tax["tax_before_cess"],
+                    "cess": tax["cess"],
+                    "total_tax": tax["total_tax"],
+                },
+            ).mappings().one()
+
+        return {
+            "message": "Tax calculated and saved successfully",
+            "financial_year": financial_year,
+            "regime": "NEW",
+            "tax": tax,
+            "result_id": saved["result_id"],
+            "calculated_at": saved["calculated_at"],
+            "notice": "Demo tax rules only; verify rules before real tax use.",
+        }
+
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(
+            status_code=500,
+            detail="C++ tax engine timed out",
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to calculate and save tax",
+        ) from error
+
+
+@app.get("/tax/results")
+def get_tax_results(user_id: int):
+    try:
+        with engine.connect() as connection:
+            results = connection.execute(
+                text("""
+                    SELECT
+                        result_id,
+                        user_id,
+                        gross_income,
+                        expenses,
+                        taxable_income,
+                        tax_before_cess,
+                        cess,
+                        total_tax,
+                        calculated_at
+                    FROM tax_results
+                    WHERE user_id = :user_id
+                    ORDER BY calculated_at DESC
+                """),
+                {"user_id": user_id},
+            ).mappings().all()
+
+        return {
+            "user_id": user_id,
+            "count": len(results),
+            "results": [dict(row) for row in results],
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch tax results",
         ) from error
