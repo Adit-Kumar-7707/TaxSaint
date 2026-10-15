@@ -1,0 +1,4 @@
+transaction_type,party_name,amount,date,description
+INCOME,ABC Company,50000,2026-04-10,Salary credited
+EXPENSE,Local Cafe,500,2026-04-12,Food payment
+EXPENSE,Local Store,1200,2026-04-20,Shopping payment

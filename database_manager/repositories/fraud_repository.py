@@ -118,3 +118,57 @@ def find_income_mismatches(user_id: int):
         )
 
         return [dict(row) for row in result.mappings().all()]
+
+
+def save_income_mismatch_alerts(user_id: int):
+    mismatches = find_income_mismatches(user_id)
+    saved_alerts = []
+
+    with engine.begin() as connection:
+        for mismatch in mismatches:
+            result = connection.execute(
+                text("""
+                    INSERT INTO fraud_alerts (
+                        user_id,
+                        fraud_type,
+                        transaction_source,
+                        transaction_id,
+                        matched_source,
+                        matched_transaction_id,
+                        difference_amount,
+                        reason
+                    )
+                    VALUES (
+                        :user_id,
+                        'INCOME_MISMATCH',
+                        'INCOME',
+                        :transaction_id,
+                        'BANK',
+                        :matched_transaction_id,
+                        :difference_amount,
+                        :reason
+                    )
+                    ON CONFLICT (
+                        fraud_type,
+                        transaction_source,
+                        transaction_id
+                    ) DO NOTHING
+                    RETURNING alert_id
+                """),
+                {
+                    "user_id": user_id,
+                    "transaction_id": mismatch["income_id"],
+                    "matched_transaction_id": mismatch["transaction_id"],
+                    "difference_amount": mismatch["difference_amount"],
+                    "reason": (
+                        f"Income and bank amount mismatch for "
+                        f"{mismatch['party_name']}"
+                    ),
+                },
+            )
+
+            alert_id = result.scalar_one_or_none()
+            if alert_id is not None:
+                saved_alerts.append(alert_id)
+
+    return saved_alerts

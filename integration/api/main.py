@@ -6,21 +6,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from database_manager.connection import engine
-from database_manager.repositories.fraud_repository import (
-    find_duplicate_expenses,
-    save_duplicate_alerts,
-)
-from database_manager.repositories.fraud_repository import (
-    find_duplicate_expenses,
-    save_duplicate_alerts,
-    find_income_mismatches,
-)
+
 from database_manager.repositories.fraud_repository import (
     find_duplicate_expenses,
     save_duplicate_alerts,
     find_income_mismatches,
     save_income_mismatch_alerts,
 )
+
 import json
 import subprocess
 from pathlib import Path

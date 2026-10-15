@@ -7,3 +7,8 @@ node_modules/
 .DS_Store
 build/
 dist/
+
+# Temporary C++ build files
+/tax_calculation/tax_engine/calculatetax
+/tax_calculation/tax_engine/*.o
+/tax_calculation/tax_engine/tempCodeRunnerFile*
