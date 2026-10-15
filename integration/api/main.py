@@ -6,6 +6,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from database_manager.connection import engine
+from database_manager.repositories.fraud_repository import (
+    find_duplicate_expenses,
+    save_duplicate_alerts,
+)
+
+
 app = FastAPI(title="TaxSaint API")
 
 
@@ -260,4 +266,39 @@ def get_bank_transactions(user_id: int):
         raise HTTPException(
             status_code=500,
             detail="Unable to fetch bank transactions",
+        ) from error
+
+
+@app.get("/fraud/duplicate-expenses")
+def get_duplicate_expenses(user_id: int):
+    try:
+        duplicates = find_duplicate_expenses(user_id)
+        return {
+            "user_id": user_id,
+            "duplicate_groups": duplicates,
+            "count": len(duplicates),
+        }
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to detect duplicate expenses",
+        ) from error
+
+
+@app.post("/fraud/duplicate-expenses/scan")
+def scan_duplicate_expenses(user_id: int):
+    try:
+        saved_alert_ids = save_duplicate_alerts(user_id)
+
+        return {
+            "message": "Duplicate expense scan completed",
+            "user_id": user_id,
+            "alerts_created": len(saved_alert_ids),
+            "alert_ids": saved_alert_ids,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save duplicate expense alerts",
         ) from error
