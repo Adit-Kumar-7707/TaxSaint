@@ -233,3 +233,31 @@ def create_bank_transaction(transaction: BankTransactionCreate):
             status_code=500,
             detail="Unable to save bank transaction",
         ) from error
+
+
+@app.get("/bank-transactions")
+def get_bank_transactions(user_id: int):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                text("""
+                    SELECT transaction_id, user_id, party_name,
+                           transaction_type, amount, transaction_date
+                    FROM bank_transactions
+                    WHERE user_id = :user_id
+                    ORDER BY transaction_date DESC
+                """),
+                {"user_id": user_id},
+            )
+
+            records = result.mappings().all()
+
+        return {
+            "bank_transactions": [dict(row) for row in records]
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch bank transactions",
+        ) from error
