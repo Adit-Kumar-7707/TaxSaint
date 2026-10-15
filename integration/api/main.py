@@ -392,3 +392,58 @@ def get_fraud_alerts(user_id: int):
             status_code=500,
             detail="Unable to fetch fraud alerts",
         ) from error
+
+
+class FraudAlertStatusUpdate(BaseModel):
+    status: str
+
+
+@app.patch("/fraud/alerts/{alert_id}")
+def update_fraud_alert_status(
+    alert_id: int,
+    update: FraudAlertStatusUpdate,
+    user_id: int,
+):
+    if update.status not in ("VERIFIED", "DISMISSED"):
+        raise HTTPException(
+            status_code=422,
+            detail="Status must be VERIFIED or DISMISSED",
+        )
+
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(
+                text("""
+                    UPDATE fraud_alerts
+                    SET status = :status
+                    WHERE alert_id = :alert_id
+                      AND user_id = :user_id
+                    RETURNING alert_id, user_id, fraud_type, status
+                """),
+                {
+                    "status": update.status,
+                    "alert_id": alert_id,
+                    "user_id": user_id,
+                },
+            )
+
+            alert = result.mappings().one_or_none()
+
+        if alert is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Fraud alert not found",
+            )
+
+        return {
+            "message": "Fraud alert status updated",
+            "alert": dict(alert),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to update fraud alert",
+        ) from error
