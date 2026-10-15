@@ -128,3 +128,52 @@ def get_expenses(user_id: int):
             status_code=500,
             detail="Unable to fetch expense records",
         ) from error
+
+
+class ExpenseCreate(BaseModel):
+    user_id: int
+    category: str = Field(min_length=1, max_length=50)
+    party_name: str = Field(min_length=1, max_length=100)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    expense_date: date
+
+
+@app.post("/expenses", status_code=201)
+def create_expense(expense: ExpenseCreate):
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(
+                text("""
+                    INSERT INTO expenses
+                    (user_id, category, party_name, amount, expense_date)
+                    VALUES
+                    (:user_id, :category, :party_name, :amount, :expense_date)
+                    RETURNING expense_id
+                """),
+                {
+                    "user_id": expense.user_id,
+                    "category": expense.category,
+                    "party_name": expense.party_name,
+                    "amount": expense.amount,
+                    "expense_date": expense.expense_date,
+                },
+            )
+
+            expense_id = result.scalar_one()
+
+        return {
+            "message": "Expense added successfully",
+            "expense_id": expense_id,
+        }
+
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id or expense data",
+        ) from error
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save expense",
+        ) from error
