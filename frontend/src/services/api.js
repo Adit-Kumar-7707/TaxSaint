@@ -121,8 +121,17 @@ async function getUser(userId) {
 
 
 async function createUser(userData) {
-  // endpoint implementation comes later
   return postRequest("/api/users", userData);
+}
+
+// update the current user's profile
+async function updateUser(userId, userData) {
+  const response = await fetch(buildUrl(`/api/users/${userId}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(userData)
+  });
+  return handleResponse(response);
 }
 
 
@@ -172,15 +181,22 @@ async function updateFraudAlertStatus(alertId, status) {
   });
 }
 
+// Scan saved transactions and persist newly detected potential anomalies.
+async function runFraudScan(userId) {
+  return postRequest(`/api/fraud/scan/${userId}`, {});
+}
+
 // export API service
 export {
   getUser,
   createUser,
+  updateUser,
   createIncome,
   createExpense,
   calculateTax,
   getFinancialSummary,
   getTaxResult,
   getFraudAlerts,
-  updateFraudAlertStatus
+  updateFraudAlertStatus,
+  runFraudScan
 };

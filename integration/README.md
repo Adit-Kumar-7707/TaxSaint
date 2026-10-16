@@ -30,3 +30,15 @@ integration/
 
 The API modules are currently scaffolded and ready for route and schema
 implementations.
+
+## Run the API
+
+From the repository root, install the dependencies from `requirements.txt` and run:
+
+```bash
+uvicorn integration.api.main:app --reload
+```
+
+The default development database is SQLite. Set `DATABASE_URL` to a Supabase PostgreSQL connection string for PostgreSQL, and apply `database_manager/schema/migration_backend.sql` if the original tables already exist. The API docs are available at `/docs`.
+
+The route modules now provide user/profile operations, income/expense/bank transaction entry, financial summaries, tax calculations through the C++ engine, and potential anomaly-alert review. Alerts are not confirmed findings of fraud.

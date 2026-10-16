@@ -30,7 +30,7 @@ from data_input.importers.csv_importer import (               # noqa: E402
     TransactionType as T,
 )
 
-SAMPLES = PROJECT_ROOT / "data_input" / "sample_data"
+SAMPLES = PROJECT_ROOT / "data_input" / "importers"
 USER_ID = 7
 
 

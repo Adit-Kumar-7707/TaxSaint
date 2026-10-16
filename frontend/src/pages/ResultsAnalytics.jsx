@@ -101,11 +101,25 @@ const loadResultsAndAnalytics = async () => {
   }
 };
 
+ // update one alert and keep the UI in sync with the backend
+const handleFraudAlertStatusChange = async (alertId, status) => {
+  try {
+    const updated = await updateFraudAlertStatus(alertId, status);
+    setFraudAlerts((currentAlerts) => currentAlerts.map((alert) =>
+      (alert.id === alertId || alert.alert_id === alertId)
+        ? { ...alert, status: updated.status || status }
+        : alert
+    ));
+  } catch (requestError) {
+    setError(requestError instanceof Error ? requestError : new Error("Unable to update alert status."));
+  }
+};
+
  // load page data when component mounts
 React.useEffect(() => {
-  // load results and analytics
-  loadResultsAndAnalytics();
-}, []);
+  // Load results only after a user has been selected or created.
+  if (userId) loadResultsAndAnalytics();
+}, [userId]);
 
   // results and analytics page layout
   return (
