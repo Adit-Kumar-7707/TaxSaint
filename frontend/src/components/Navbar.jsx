@@ -1,64 +1,51 @@
-// TaxSaint navigation bar
-
+// TaxSaint top navigation bar
 import React from "react";
 
-
-// navigation bar component
 function Navbar({
   title = "TaxSaint",
-  userName = "",
-  onProfileClick
+  user = null,
+  onProfileClick,
+  onSelectDemoUser,
 }) {
+  const userName = user?.name || "Guest";
+  const userInitial = userName.charAt(0).toUpperCase();
 
-  // handle profile action
-  const handleProfileClick = () => {
-
-    // run parent callback
-    if (typeof onProfileClick === "function") {
-      onProfileClick();
-    }
-  };
-
-
-  // navigation bar layout
   return (
     <header id="taxsaint-navbar">
-
-      {/* application branding */}
-      <div id="navbar-brand">
+      <div className="navbar-brand">
         <h1>{title}</h1>
+        <span className="navbar-badge">FY 2026-27</span>
       </div>
 
-
-      {/* application description */}
-      <div id="navbar-page-info">
-        <span>Tax & Financial Assistance</span>
-      </div>
-
-
-      {/* user controls */}
-      <div id="navbar-user">
-
-        {userName && (
-          <span id="navbar-user-name">
-            {userName}
-          </span>
+      <div className="navbar-actions">
+        {onSelectDemoUser && (
+          <div className="demo-selector-group">
+            <span>Demo Persona:</span>
+            <select
+              aria-label="Demo Persona"
+              onChange={(e) => onSelectDemoUser(e.target.value)}
+              defaultValue=""
+            >
+              <option value="" disabled>Select Demo Profile...</option>
+              <option value="1">Rahul Sharma (Salaried - ₹15L)</option>
+              <option value="2">Priya Patel (Business - Anomaly Demo)</option>
+            </select>
+          </div>
         )}
 
-        <button
-          type="button"
-          id="navbar-profile-button"
-          onClick={handleProfileClick}
+        <div
+          className="user-chip"
+          onClick={onProfileClick}
+          title="View profile"
+          role="button"
+          tabIndex={0}
         >
-          Profile
-        </button>
-
+          <div className="user-avatar">{userInitial}</div>
+          <span>{userName}</span>
+        </div>
       </div>
-
     </header>
   );
 }
 
-
-// export navigation bar
 export default Navbar;

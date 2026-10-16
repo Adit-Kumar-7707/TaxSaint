@@ -21,8 +21,21 @@ MISMATCH_TOLERANCE = 1.0     # Rule 2: ignore differences up to Rs 1
 
 
 def normalize_party(name: str) -> str:
-    """'  abc  Traders ' -> 'ABC TRADERS' so names match reliably."""
-    return " ".join(name.split()).upper()
+    """'  abc  Traders ' -> 'ABC TRADERS' with banking prefixes like UPI/ removed."""
+    cleaned = " ".join(name.split()).upper()
+    for prefix in ("UPI/", "NEFT/", "IMPS/", "RTGS/", "POS/", "ACH/"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+    parts = cleaned.split("/")
+    if len(parts) > 1 and parts[0].strip():
+        cleaned = parts[0].strip()
+    return cleaned
+
+
+def _is_self_transfer_or_refund(t: dict) -> bool:
+    party = normalize_party(t.get("party_name") or "")
+    return any(keyword in party for keyword in ("SELF", "OWN ACC", "INTERNAL TRANSFER", "REFUND"))
 
 
 def _same_user_and_party(a: dict, b: dict) -> bool:
@@ -34,7 +47,7 @@ def _days_apart(a: dict, b: dict) -> int:
 
 
 def _is_bank_income(t: dict) -> bool:
-    return t["source"] == "BANK" and t["transaction_type"] == "INCOME"
+    return t["source"] == "BANK" and t["transaction_type"] == "INCOME" and not _is_self_transfer_or_refund(t)
 
 
 def _alert(fraud_type: str, t: dict, matched, difference: float, reason: str) -> dict:

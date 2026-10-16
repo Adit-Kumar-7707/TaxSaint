@@ -1,21 +1,31 @@
-// TaxSaint main application: connects the page components to the FastAPI backend.
-import React, { useCallback, useEffect, useState } from "react";
+// TaxSaint main application.
+// Connects UI pages with FastAPI backend and computational engines.
+import React, { useState, useEffect, useCallback } from "react";
+
+// Components
+import Navbar from "./components/Navbar.jsx";
+import Sidebar from "./components/Sidebar.jsx";
+
+// Pages
 import Dashboard from "./pages/Dashboard.jsx";
 import Profile from "./pages/Profile.jsx";
 import Salaried from "./pages/Salaried.jsx";
 import Business from "./pages/Business.jsx";
 import ResultsAnalytics from "./pages/ResultsAnalytics.jsx";
+
+// API Client Services
 import {
-  calculateTax,
-  createExpense,
-  createIncome,
-  createUser,
-  getFinancialSummary,
-  getFraudAlerts,
-  getTaxResult,
   getUser,
-  runFraudScan,
+  createUser,
   updateUser,
+  createIncome,
+  createExpense,
+  calculateTax,
+  getFinancialSummary,
+  getTaxResult,
+  getFraudAlerts,
+  updateFraudAlertStatus,
+  runFraudScan
 } from "./services/api.js";
 
 const APP_PAGES = {
@@ -25,177 +35,294 @@ const APP_PAGES = {
   BUSINESS: "business",
   RESULTS_ANALYTICS: "results-analytics",
 };
-const STORAGE_KEY = "taxsaint.user";
-
-function readStoredUser() {
-  try {
-    return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "null");
-  } catch {
-    return null;
-  }
-}
 
 function App() {
   const [currentPage, setCurrentPage] = useState(APP_PAGES.DASHBOARD);
-  const [user, setUser] = useState(readStoredUser);
+  const [user, setUser] = useState(null);
   const [summary, setSummary] = useState(null);
   const [taxResult, setTaxResult] = useState(null);
   const [alerts, setAlerts] = useState([]);
+
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState("");
 
-  const saveUserLocally = (nextUser) => {
-    setUser(nextUser);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextUser));
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+    setError(null);
+    setSuccessMessage("");
   };
 
-  const refreshFinancialData = useCallback(async (userId) => {
-    if (!userId) return;
-    const [nextSummary, nextTaxResult, nextFraudResponse] = await Promise.all([
-      getFinancialSummary(userId),
-      getTaxResult(userId),
-      getFraudAlerts(userId),
-    ]);
-    setSummary(nextSummary);
-    setTaxResult(nextTaxResult);
-    setAlerts(Array.isArray(nextFraudResponse) ? nextFraudResponse : (nextFraudResponse?.alerts || []));
-  }, []);
-
-  // Rehydrate the stored profile and fetch persisted results when the app opens.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadUser() {
-      if (!user?.id) return;
-      try {
-        const savedUser = await getUser(user.id);
-        if (cancelled) return;
-        saveUserLocally(savedUser);
-        await refreshFinancialData(savedUser.id);
-      } catch (requestError) {
-        if (!cancelled) setError(requestError instanceof Error ? requestError.message : "Unable to load saved user data.");
-      }
-    }
-    loadUser();
-    return () => { cancelled = true; };
-    // Only the saved user ID controls this initial hydration.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, refreshFinancialData]);
-
-  const runAction = async (action, successText) => {
-    setLoading(true);
-    setError("");
+  const handleDismissSuccess = () => {
     setSuccessMessage("");
+  };
+
+  // Helper to execute asynchronous API actions with loading and error tracking
+  const runAction = async (actionFn, successMsg = "") => {
+    setLoading(true);
+    setError(null);
     try {
-      const result = await action();
-      if (user?.id) await refreshFinancialData(user.id);
-      if (successText) setSuccessMessage(successText);
+      const result = await actionFn();
+      if (successMsg) setSuccessMessage(successMsg);
       return result;
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "The request could not be completed.");
+    } catch (err) {
+      console.error("Action error:", err);
+      setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSaveProfile = async (profileData) => {
-    const saved = await runAction(
-      () => user?.id ? updateUser(user.id, profileData) : createUser(profileData),
-      user?.id ? "Profile updated successfully." : "Your TaxSaint profile has been created."
+  // Refresh financial summary, latest tax result, and fraud alerts for active user
+  const refreshUserData = useCallback(async (userId) => {
+    if (!userId) return;
+    try {
+      const [sumRes, taxRes, alertRes] = await Promise.all([
+        getFinancialSummary(userId).catch(() => null),
+        getTaxResult(userId).catch(() => null),
+        getFraudAlerts(userId).catch(() => ({ alerts: [] }))
+      ]);
+
+      setSummary(sumRes);
+      setTaxResult(taxRes);
+      const rawAlerts = Array.isArray(alertRes) ? alertRes : (alertRes?.alerts || []);
+      setAlerts(rawAlerts);
+    } catch (err) {
+      console.warn("Could not load supplementary financial data:", err);
+    }
+  }, []);
+
+  // Quick Persona Selector for live evaluation
+  const handleSelectDemoUser = async (userId) => {
+    const loadedUser = await runAction(
+      () => getUser(userId),
+      `Switched to demo persona: User ID ${userId}`
     );
-    if (saved) {
-      saveUserLocally(saved);
-      setCurrentPage(saved.userType === "business" ? APP_PAGES.BUSINESS : APP_PAGES.SALARIED);
-      await refreshFinancialData(saved.id);
+    if (loadedUser) {
+      setUser(loadedUser);
+      await refreshUserData(loadedUser.id ?? loadedUser.user_id);
     }
   };
 
+  // Save / Update profile in database
+  const handleSaveProfile = async (profileData) => {
+    const userId = user?.id ?? user?.user_id;
+    if (userId) {
+      const updated = await runAction(
+        () => updateUser(userId, profileData),
+        "Profile successfully updated in database."
+      );
+      if (updated) setUser(updated);
+    } else {
+      const created = await runAction(
+        () => createUser(profileData),
+        "Profile created successfully! You can now record transactions."
+      );
+      if (created) {
+        setUser(created);
+        await refreshUserData(created.id ?? created.user_id);
+      }
+    }
+  };
+
+  // Record income entry
   const handleIncomeSubmit = async (incomeData) => {
-    if (!user?.id) {
-      setError("Create your profile first from the Profile page.");
+    const userId = user?.id ?? user?.user_id;
+    if (!userId) {
+      setError("Please select or create a profile first from the Profile page.");
       setCurrentPage(APP_PAGES.PROFILE);
       return;
     }
-    const result = await runAction(() => createIncome({ ...incomeData, userId: user.id }), "Income saved successfully.");
-    if (result) await refreshFinancialData(user.id);
+    const result = await runAction(
+      () => createIncome({ ...incomeData, userId }),
+      "Income transaction saved to database."
+    );
+    if (result) await refreshUserData(userId);
   };
 
+  // Record expense entry
   const handleExpenseSubmit = async (expenseData) => {
-    if (!user?.id) {
-      setError("Create your profile first from the Profile page.");
+    const userId = user?.id ?? user?.user_id;
+    if (!userId) {
+      setError("Please select or create a profile first from the Profile page.");
       setCurrentPage(APP_PAGES.PROFILE);
       return;
     }
-    const result = await runAction(() => createExpense({ ...expenseData, userId: user.id }), "Expense saved successfully.");
-    if (result) await refreshFinancialData(user.id);
+    const result = await runAction(
+      () => createExpense({ ...expenseData, userId }),
+      "Expense transaction saved to database."
+    );
+    if (result) await refreshUserData(userId);
   };
 
+  // Run C++ tax engine calculation
   const handleCalculateTax = async (taxData) => {
-    if (!user?.id) {
-      setError("Create your profile first from the Profile page.");
+    const userId = user?.id ?? user?.user_id;
+    if (!userId) {
+      setError("Please select or create a profile first from the Profile page.");
       setCurrentPage(APP_PAGES.PROFILE);
       return;
     }
-    const result = await runAction(() => calculateTax({ ...taxData, userId: user.id }), "Tax calculation completed.");
+    const result = await runAction(
+      () => calculateTax({ ...taxData, userId }),
+      "Tax calculated using C++ progressive engine!"
+    );
     if (result) {
       setTaxResult(result);
       setCurrentPage(APP_PAGES.RESULTS_ANALYTICS);
     }
   };
 
+  // Run deterministic fraud anomaly scan
   const handleRunFraudCheck = async () => {
-    if (!user?.id) {
-      setError("Create your profile first from the Profile page.");
+    const userId = user?.id ?? user?.user_id;
+    if (!userId) {
+      setError("Please select or create a profile first from the Profile page.");
       setCurrentPage(APP_PAGES.PROFILE);
       return;
     }
-    const result = await runAction(() => runFraudScan(user.id), "Transaction scan completed. Alerts are potential issues requiring review.");
-    if (result) await refreshFinancialData(user.id);
+    const result = await runAction(
+      () => runFraudScan(userId),
+      "Transaction anomaly scan complete. Review potential issues in Results & Analytics."
+    );
+    if (result) await refreshUserData(userId);
   };
 
-  const handleRetry = () => user?.id ? runAction(() => refreshFinancialData(user.id), "") : setCurrentPage(APP_PAGES.PROFILE);
-  const dismissSuccess = () => setSuccessMessage("");
-  const navigate = (page) => setCurrentPage(page);
+  // Handle alert status update
+  const handleAlertStatusChange = async (alertId, newStatus) => {
+    const updated = await runAction(
+      () => updateFraudAlertStatus(alertId, newStatus),
+      `Alert marked as ${newStatus}.`
+    );
+    if (updated) {
+      const userId = user?.id ?? user?.user_id;
+      if (userId) await refreshUserData(userId);
+    }
+  };
 
-  const dashboardSummary = summary ? {
-    ...summary,
-    totalIncome: summary.income,
-    totalExpenses: summary.expenses,
-    netIncome: summary.netPosition,
-    tax: taxResult ? { taxableIncome: taxResult.taxableIncome, taxAmount: taxResult.totalTax } : null,
-    alerts,
-  } : null;
+  // Callback when a statement is uploaded via CSV/Excel
+  const handleUploadSuccess = async () => {
+    setSuccessMessage("Statement processed and records imported into ledger!");
+    const userId = user?.id ?? user?.user_id;
+    if (userId) await refreshUserData(userId);
+  };
+
+  // Auto-attempt to load user ID 1 on startup if available
+  useEffect(() => {
+    getUser(1)
+      .then((u) => {
+        if (u) {
+          setUser(u);
+          refreshUserData(1);
+        }
+      })
+      .catch(() => {
+        // Normal if database not seeded yet
+      });
+  }, [refreshUserData]);
+
+  const activeAlertsCount = alerts.filter(
+    (a) => a.status === "NEEDS_VERIFICATION" || !a.status
+  ).length;
 
   const renderPage = () => {
-    const shared = { loading, error, successMessage, onRetry: handleRetry, onDismissSuccess: dismissSuccess };
+    const sharedProps = {
+      user,
+      loading,
+      error,
+      successMessage,
+      onRetry: () => {
+        const uid = user?.id ?? user?.user_id;
+        if (uid) refreshUserData(uid);
+      },
+      onDismissSuccess: handleDismissSuccess
+    };
+
     switch (currentPage) {
-      case APP_PAGES.PROFILE:
-        return <Profile {...shared} user={user} onSave={handleSaveProfile} />;
-      case APP_PAGES.SALARIED:
-        return <Salaried {...shared} user={user} taxResult={taxResult} onIncomeSubmit={handleIncomeSubmit} onCalculateTax={handleCalculateTax} />;
-      case APP_PAGES.BUSINESS:
-        return <Business {...shared} user={user} taxResult={taxResult} alerts={alerts} onIncomeSubmit={handleIncomeSubmit} onExpenseSubmit={handleExpenseSubmit} onCalculateTax={handleCalculateTax} onRunFraudCheck={handleRunFraudCheck} />;
-      case APP_PAGES.RESULTS_ANALYTICS:
-        return user ? <ResultsAnalytics user={user} /> : <Profile {...shared} user={user} onSave={handleSaveProfile} />;
       case APP_PAGES.DASHBOARD:
+        return (
+          <Dashboard
+            {...sharedProps}
+            summary={summary}
+            taxResult={taxResult}
+            alerts={alerts}
+            onNavigate={handlePageChange}
+          />
+        );
+
+      case APP_PAGES.PROFILE:
+        return (
+          <Profile
+            {...sharedProps}
+            onSave={handleSaveProfile}
+          />
+        );
+
+      case APP_PAGES.SALARIED:
+        return (
+          <Salaried
+            {...sharedProps}
+            taxResult={taxResult}
+            onIncomeSubmit={handleIncomeSubmit}
+            onCalculateTax={handleCalculateTax}
+            onUploadSuccess={handleUploadSuccess}
+          />
+        );
+
+      case APP_PAGES.BUSINESS:
+        return (
+          <Business
+            {...sharedProps}
+            taxResult={taxResult}
+            alerts={alerts}
+            onIncomeSubmit={handleIncomeSubmit}
+            onExpenseSubmit={handleExpenseSubmit}
+            onCalculateTax={handleCalculateTax}
+            onRunFraudCheck={handleRunFraudCheck}
+            onAlertStatusChange={handleAlertStatusChange}
+            onUploadSuccess={handleUploadSuccess}
+          />
+        );
+
+      case APP_PAGES.RESULTS_ANALYTICS:
+        return (
+          <ResultsAnalytics user={user} />
+        );
+
       default:
-        return <Dashboard {...shared} user={user} summary={dashboardSummary} onNavigate={navigate} />;
+        return (
+          <Dashboard
+            {...sharedProps}
+            summary={summary}
+            taxResult={taxResult}
+            alerts={alerts}
+            onNavigate={handlePageChange}
+          />
+        );
     }
   };
 
   return (
     <div id="taxsaint-app">
-      <header id="taxsaint-header"><h1>TaxSaint</h1></header>
-      <nav id="taxsaint-navigation" aria-label="Main navigation">
-        <button type="button" onClick={() => navigate(APP_PAGES.DASHBOARD)}>Dashboard</button>
-        <button type="button" onClick={() => navigate(APP_PAGES.PROFILE)}>Profile</button>
-        <button type="button" onClick={() => navigate(APP_PAGES.SALARIED)}>Salaried</button>
-        <button type="button" onClick={() => navigate(APP_PAGES.BUSINESS)}>Business</button>
-        <button type="button" onClick={() => navigate(APP_PAGES.RESULTS_ANALYTICS)}>Results &amp; Analytics</button>
-      </nav>
-      {error && <div role="alert" id="taxsaint-global-error">{error}</div>}
-      <main id="taxsaint-content">{renderPage()}</main>
+      <Navbar
+        title="TaxSaint"
+        user={user}
+        onProfileClick={() => handlePageChange(APP_PAGES.PROFILE)}
+        onSelectDemoUser={handleSelectDemoUser}
+      />
+
+      <div className="taxsaint-layout-body">
+        <Sidebar
+          currentPage={currentPage}
+          onPageChange={handlePageChange}
+          alertCount={activeAlertsCount}
+        />
+
+        <main id="taxsaint-content">
+          {renderPage()}
+        </main>
+      </div>
     </div>
   );
 }

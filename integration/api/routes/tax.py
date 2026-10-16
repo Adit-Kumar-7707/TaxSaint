@@ -88,9 +88,9 @@ def calculate_tax(payload: TaxCalculateRequest, db: Session = Depends(get_db)):
     db.add(saved)
     db.commit()
     db.refresh(saved)
-    return _serialize_tax_result(saved)
+    return _serialize_tax_result(saved, slab_breakdown=result.get("slab_breakdown"))
 
-def _serialize_tax_result(row: TaxResult) -> dict:
+def _serialize_tax_result(row: TaxResult, slab_breakdown: list[dict] | None = None) -> dict:
     return {
         "id": row.result_id, "result_id": row.result_id, "user_id": row.user_id,
         "income": float(row.gross_income), "gross_income": float(row.gross_income),
@@ -99,6 +99,8 @@ def _serialize_tax_result(row: TaxResult) -> dict:
         "tax_before_cess": float(row.tax_before_cess), "cess": float(row.cess),
         "totalTax": float(row.total_tax), "total_tax": float(row.total_tax),
         "calculated_at": row.calculated_at.isoformat() if row.calculated_at else None,
+        "slabBreakdown": slab_breakdown or [],
+        "slab_breakdown": slab_breakdown or [],
     }
 
 @router.get("/result/{user_id}")
@@ -108,4 +110,26 @@ def get_tax_result(user_id: int, db: Session = Depends(get_db)):
     row = db.query(TaxResult).filter(TaxResult.user_id == user_id).order_by(TaxResult.calculated_at.desc(), TaxResult.result_id.desc()).first()
     if row is None:
         return None
-    return _serialize_tax_result(row)
+    slabs = db.query(TaxSlab).order_by(TaxSlab.lower_limit).all()
+    taxable = float(row.taxable_income)
+    settings = db.query(TaxSettings).first()
+    gets_rebate = settings and taxable <= float(settings.rebate_limit)
+    breakdown = []
+    for s in slabs:
+        lower = float(s.lower_limit)
+        upper = float(s.upper_limit) if s.upper_limit is not None else -1
+        rate = float(s.rate)
+        taxable_in_slab = 0.0
+        tax_in_slab = 0.0
+        if taxable > lower:
+            top = taxable if upper == -1 or taxable < upper else upper
+            taxable_in_slab = round(top - lower, 2)
+            tax_in_slab = 0.0 if gets_rebate else round(taxable_in_slab * rate / 100.0, 2)
+        breakdown.append({
+            "lower": lower,
+            "upper": None if upper == -1 else upper,
+            "rate": rate,
+            "taxable_in_slab": taxable_in_slab,
+            "tax_in_slab": tax_in_slab,
+        })
+    return _serialize_tax_result(row, slab_breakdown=breakdown)

@@ -22,6 +22,15 @@ struct TaxRules {
     std::vector<Slab> slabs;    // ascending order
 };
 
+// Details of tax calculated in a specific slab
+struct SlabDetail {
+    double lower;
+    double upper;   // -1 = no upper limit
+    double rate;
+    double taxableInSlab;
+    double taxInSlab;
+};
+
 // Complete result returned to backend
 struct TaxResult {
     double grossIncome;
@@ -30,6 +39,7 @@ struct TaxResult {
     double taxBeforeCess;
     double cess;
     double totalTax;
+    std::vector<SlabDetail> slabBreakdown;
 };
 
 // Checks the rules; empty list = valid

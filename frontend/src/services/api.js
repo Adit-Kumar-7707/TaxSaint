@@ -186,6 +186,33 @@ async function runFraudScan(userId) {
   return postRequest(`/api/fraud/scan/${userId}`, {});
 }
 
+// upload CSV or Excel statement file
+async function uploadStatement(userId, file) {
+  const formData = new FormData();
+  formData.append("user_id", userId);
+  formData.append("file", file);
+
+  const response = await fetch(buildUrl("/api/financial/upload"), {
+    method: "POST",
+    headers: {
+      Accept: "application/json"
+    },
+    body: formData
+  });
+
+  return handleResponse(response);
+}
+
+// get list of recorded income
+async function getIncomeList(userId) {
+  return getRequest(`/api/financial/income/${userId}`);
+}
+
+// get list of recorded expenses
+async function getExpenseList(userId) {
+  return getRequest(`/api/financial/expenses/${userId}`);
+}
+
 // export API service
 export {
   getUser,
@@ -198,5 +225,8 @@ export {
   getTaxResult,
   getFraudAlerts,
   updateFraudAlertStatus,
-  runFraudScan
+  runFraudScan,
+  uploadStatement,
+  getIncomeList,
+  getExpenseList
 };

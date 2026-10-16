@@ -147,6 +147,25 @@ TaxResult calculate_tax_result(double income, double expenses,
     // Slab-wise tax with rebate
     result.taxBeforeCess = calculate_tax(taxable, rules);
 
+    // Compute slab breakdown for detailed reporting
+    bool getsRebate = (taxable <= rules.rebateLimit);
+    for (size_t i = 0; i < rules.slabs.size(); i++) {
+        const Slab& s = rules.slabs[i];
+        SlabDetail detail{};
+        detail.lower = s.lower;
+        detail.upper = s.upper;
+        detail.rate = s.rate;
+        detail.taxableInSlab = 0;
+        detail.taxInSlab = 0;
+
+        if (taxable > s.lower) {
+            double top = (s.upper == -1 || taxable < s.upper) ? taxable : s.upper;
+            detail.taxableInSlab = top - s.lower;
+            detail.taxInSlab = (getsRebate ? 0.0 : detail.taxableInSlab * s.rate / 100.0);
+        }
+        result.slabBreakdown.push_back(detail);
+    }
+
     // Calculate health and education cess
     result.cess = result.taxBeforeCess * rules.cessRate / 100;
 
@@ -322,8 +341,18 @@ static void print_response(const vector<UserRow>& users,
              << ", \"taxable_income\": " << json_money(r.taxableIncome)
              << ", \"tax_before_cess\": " << json_money(r.taxBeforeCess)
              << ", \"cess\": " << json_money(r.cess)
-             << ", \"total_tax\": " << json_money(r.totalTax) << "}"
-             << (i + 1 < results.size() ? ",\n" : "\n");
+             << ", \"total_tax\": " << json_money(r.totalTax)
+             << ", \"slab_breakdown\": [";
+        for (size_t s = 0; s < r.slabBreakdown.size(); s++) {
+            const tax_engine::SlabDetail& d = r.slabBreakdown[s];
+            cout << (s ? ", " : "")
+                 << "{\"lower\": " << json_money(d.lower)
+                 << ", \"upper\": " << (d.upper == -1 ? "null" : json_money(d.upper))
+                 << ", \"rate\": " << json_money(d.rate)
+                 << ", \"taxable_in_slab\": " << json_money(d.taxableInSlab)
+                 << ", \"tax_in_slab\": " << json_money(d.taxInSlab) << "}";
+        }
+        cout << "]}" << (i + 1 < results.size() ? ",\n" : "\n");
     }
 
     cout << "  ],\n  \"errors\": [";

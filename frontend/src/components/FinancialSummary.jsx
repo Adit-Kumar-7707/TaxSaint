@@ -1,156 +1,84 @@
 // TaxSaint financial summary component
-
 import React from "react";
 
-// financial summary component
 function FinancialSummary({
   summary = null,
   loading = false,
   error = null
 }) {
+  const formatCurrency = (value) => {
+    const numericValue = Number(value) || 0;
+    return `₹${numericValue.toLocaleString("en-IN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })}`;
+  };
 
-// format currency value
-const formatCurrency = (value) => {
-  // convert value into a number
-  const numericValue = Number(value) || 0;
-
-  // format value using Indian currency notation
-  return `₹${numericValue.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-};
-
- // render loading state
-const renderLoading = () => {
-  // return loading state
-  return (
-    <div
-      id="financial-summary-loading"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-    >
-      <p>Loading financial summary...</p>
+  const renderLoading = () => (
+    <div className="content-card" style={{ textAlign: "center", padding: "1.5rem" }}>
+      <p style={{ color: "var(--text-muted)" }}>Loading financial summary...</p>
     </div>
   );
-};
 
-// render error state
-const renderError = () => {
-  // determine readable error message
-  const errorMessage =
-    error instanceof Error
-      ? error.message
-      : String(error || "Unable to load financial summary.");
+  const renderError = () => {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error || "Unable to load financial summary.");
+    return (
+      <div className="taxsaint-banner error" role="alert">
+        <span>{errorMessage}</span>
+      </div>
+    );
+  };
 
-  // return error state
-  return (
-    <div
-      id="financial-summary-error"
-      role="alert"
-      aria-live="assertive"
-    >
-      <h3>Unable to load financial summary</h3>
-
-      <p>
-        {errorMessage}
+  const renderEmpty = () => (
+    <div className="content-card" style={{ textAlign: "center", padding: "1.5rem" }}>
+      <p style={{ color: "var(--text-muted)" }}>
+        No financial records recorded yet. Add income or upload a statement to view summary totals.
       </p>
     </div>
   );
-};
 
-// render empty state
-const renderEmpty = () => {
-  // return empty state
-  return (
-    <div
-      id="financial-summary-empty"
-      role="status"
-      aria-live="polite"
-    >
-      <h3>No Financial Summary Available</h3>
+  const renderSummary = () => {
+    const income = Number(summary.income ?? summary.total_income ?? summary.totalIncome) || 0;
+    const expenses = Number(summary.expenses ?? summary.total_expenses ?? summary.totalExpenses) || 0;
+    const net = Number(summary.netPosition ?? summary.net_position) || (income - expenses);
 
-      <p>
-        Add income and expense data to view your financial summary.
-      </p>
-    </div>
-  );
-};
+    return (
+      <div className="dashboard-grid">
+        <div className="stat-card">
+          <span className="label">Total Recorded Income</span>
+          <div className="value income">{formatCurrency(income)}</div>
+          <span className="subtext">Invoices, Salary & Credits</span>
+        </div>
 
-// render financial summary
-const renderSummary = () => {
-  // return financial summary cards
-  return (
-    <div id="financial-summary-grid">
+        <div className="stat-card">
+          <span className="label">Total Expenses</span>
+          <div className="value expenses">{formatCurrency(expenses)}</div>
+          <span className="subtext">Vendor Payments & Deductions</span>
+        </div>
 
-      {/* total income */}
-      <article className="financial-summary-card">
-        <span className="financial-summary-label">
-          Income
-        </span>
+        <div className="stat-card">
+          <span className="label">Net Position</span>
+          <div className={`value ${net >= 0 ? "income" : "danger"}`}>
+            {formatCurrency(net)}
+          </div>
+          <span className="subtext">{net >= 0 ? "Surplus" : "Deficit"}</span>
+        </div>
+      </div>
+    );
+  };
 
-        <strong className="financial-summary-value">
-          {formatCurrency(summary.income)}
-        </strong>
-      </article>
-
-      {/* total expenses */}
-      <article className="financial-summary-card">
-        <span className="financial-summary-label">
-          Expenses
-        </span>
-
-        <strong className="financial-summary-value">
-          {formatCurrency(summary.expenses)}
-        </strong>
-      </article>
-
-      {/* net position */}
-      <article className="financial-summary-card financial-summary-net">
-        <span className="financial-summary-label">
-          Net Position
-        </span>
-
-        <strong className="financial-summary-value">
-          {formatCurrency(summary.netPosition)}
-        </strong>
-      </article>
-
-    </div>
-  );
-};
-
-  // financial summary component layout
   return (
     <section id="taxsaint-financial-summary">
-
-      {/* component heading */}
-      <header id="financial-summary-header">
-        <h2>Financial Summary</h2>
-
-        <p>
-          Summary of your income, expenses and net position.
-        </p>
+      <header style={{ marginBottom: "1rem" }}>
+        <h2>Financial Position</h2>
       </header>
 
-{/* component content */}
-<div id="financial-summary-content">
-
-  {loading
-    ? renderLoading()
-    : error
-      ? renderError()
-      : !summary
-        ? renderEmpty()
-        : renderSummary()
-  }
-
-</div>
-
+      <div id="financial-summary-content">
+        {loading ? renderLoading() : error ? renderError() : !summary ? renderEmpty() : renderSummary()}
+      </div>
     </section>
   );
 }
 
-// export financial summary component
 export default FinancialSummary;

@@ -1,192 +1,206 @@
-// TaxSaint results and analytics page
+// TaxSaint Results & Analytics Page
+// Displays tax results, financial summaries, charts and fraud alerts.
 
-import React from "react";
+import React, { useCallback, useEffect, useState } from "react";
 
 import TaxResult from "../components/TaxResult";
 import FinancialSummary from "../components/FinancialSummary";
 import FraudAlerts from "../components/FraudAlerts";
 import AnalyticsChart from "../components/AnalyticsChart";
 
-// API service functions
 import {
   getFinancialSummary,
   getTaxResult,
   getFraudAlerts,
-  updateFraudAlertStatus
+  updateFraudAlertStatus,
 } from "../services/api";
 
-// results and analytics page
 function ResultsAnalytics({ user = null }) {
-  // current user identifier
-const userId = user?.id || null;
+  // Support both common user ID field names.
+  const userId = user?.id ?? user?.user_id ?? null;
 
-  // tax result state
-  const [taxResult, setTaxResult] = React.useState(null);
+  const [taxResult, setTaxResult] = useState(null);
+  const [financialSummary, setFinancialSummary] = useState(null);
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [fraudAlerts, setFraudAlerts] = useState([]);
 
-  // financial summary state
-  const [financialSummary, setFinancialSummary] = React.useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  // analytics data state
-  const [analyticsData, setAnalyticsData] = React.useState(null);
-
-  // fraud alerts state
-  const [fraudAlerts, setFraudAlerts] = React.useState([]);
-
-  // page loading state
-  const [loading, setLoading] = React.useState(false);
-
-  // page error state
-  const [error, setError] = React.useState(null);
-
-
-// load results and analytics
-const loadResultsAndAnalytics = async () => {
-  // start loading state
-  setLoading(true);
-
-  // clear previous error
-  setError(null);
-
-  try {
-    // validate user identifier
-    if (!userId) {
-      throw new Error("User ID is required to load results.");
+  // Load tax results, financial summaries and fraud alerts.
+  const loadResultsAndAnalytics = useCallback(async () => {
+    // A missing user should not crash the page.
+    if (userId === null || userId === undefined || userId === "") {
+      setTaxResult(null);
+      setFinancialSummary(null);
+      setAnalyticsData(null);
+      setFraudAlerts([]);
+      setError(
+        new Error(
+          "No user is selected. Create or select a user to view financial results."
+        )
+      );
+      setLoading(false);
+      return;
     }
 
-    // request all results in parallel
-    const [
-      taxResponse,
-      summaryResponse,
-      fraudResponse
-    ] = await Promise.all([
-      getTaxResult(userId),
-      getFinancialSummary(userId),
-      getFraudAlerts(userId)
-    ]);
+    setLoading(true);
+    setError(null);
 
-    // store tax result
-    setTaxResult(taxResponse);
+    try {
+      const [taxResponse, summaryResponse, fraudResponse] =
+        await Promise.all([
+          getTaxResult(userId),
+          getFinancialSummary(userId),
+          getFraudAlerts(userId),
+        ]);
 
-    // store financial summary
-    setFinancialSummary(summaryResponse);
+      setTaxResult(taxResponse);
+      setFinancialSummary(summaryResponse);
 
-    // build analytics data from financial summary
-    setAnalyticsData({
-      income: summaryResponse?.income ?? 0,
-      expenses: summaryResponse?.expenses ?? 0
-    });
+      // Accept common response names from the financial summary API.
+      const income =
+        summaryResponse?.income ??
+        summaryResponse?.total_income ??
+        summaryResponse?.totalIncome ??
+        0;
 
-    // store fraud alerts
-    setFraudAlerts(
-      Array.isArray(fraudResponse)
+      const expenses =
+        summaryResponse?.expenses ??
+        summaryResponse?.total_expenses ??
+        summaryResponse?.totalExpenses ??
+        0;
+
+      setAnalyticsData({
+        income: Number(income) || 0,
+        expenses: Number(expenses) || 0,
+      });
+
+      // Support either a direct array or an object containing alerts.
+      const receivedAlerts = Array.isArray(fraudResponse)
         ? fraudResponse
-        : fraudResponse?.alerts || []
-    );
+        : fraudResponse?.alerts ?? fraudResponse?.data ?? [];
 
-  } catch (requestError) {
+      setFraudAlerts(
+        Array.isArray(receivedAlerts) ? receivedAlerts : []
+      );
+    } catch (requestError) {
+      console.error("Failed to load Results & Analytics:", requestError);
 
-    // normalize request error
-    const normalizedError =
-      requestError instanceof Error
-        ? requestError
-        : new Error("Unable to load results and analytics.");
+      setError(
+        requestError instanceof Error
+          ? requestError
+          : new Error("Unable to load financial results.")
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
 
-    // store error
-    setError(normalizedError);
+  // Update the status of a potential financial irregularity.
+  const handleFraudAlertStatusChange = useCallback(
+    async (alertId, status) => {
+      if (alertId === null || alertId === undefined || alertId === "") {
+        setError(new Error("The selected fraud alert has no valid ID."));
+        return;
+      }
 
-  } finally {
+      const allowedStatuses = [
+        "NEEDS_VERIFICATION",
+        "VERIFIED",
+        "DISMISSED",
+      ];
 
-    // finish loading state
-    setLoading(false);
-  }
-};
+      if (!allowedStatuses.includes(status)) {
+        setError(new Error("Invalid fraud alert status."));
+        return;
+      }
 
- // update one alert and keep the UI in sync with the backend
-const handleFraudAlertStatusChange = async (alertId, status) => {
-  try {
-    const updated = await updateFraudAlertStatus(alertId, status);
-    setFraudAlerts((currentAlerts) => currentAlerts.map((alert) =>
-      (alert.id === alertId || alert.alert_id === alertId)
-        ? { ...alert, status: updated.status || status }
-        : alert
-    ));
-  } catch (requestError) {
-    setError(requestError instanceof Error ? requestError : new Error("Unable to update alert status."));
-  }
-};
+      try {
+        setError(null);
 
- // load page data when component mounts
-React.useEffect(() => {
-  // Load results only after a user has been selected or created.
-  if (userId) loadResultsAndAnalytics();
-}, [userId]);
+        await updateFraudAlertStatus(alertId, status);
 
-  // results and analytics page layout
+        await loadResultsAndAnalytics();
+      } catch (requestError) {
+        console.error("Failed to update fraud alert:", requestError);
+
+        setError(
+          requestError instanceof Error
+            ? requestError
+            : new Error("Unable to update fraud alert status.")
+        );
+      }
+    },
+    [loadResultsAndAnalytics]
+  );
+
+  // Reload data when the page opens or the user changes.
+  useEffect(() => {
+    loadResultsAndAnalytics();
+  }, [loadResultsAndAnalytics]);
+
   return (
     <main id="taxsaint-results-analytics">
-
-      {/* page header */}
       <header id="results-analytics-header">
-
-        <h1>
-          Results & Analytics
-        </h1>
+        <h1>Results &amp; Analytics</h1>
 
         <p>
-          Review your tax results, financial position
-          and potential financial alerts.
+          Review your tax results, financial position and potential
+          financial alerts.
         </p>
 
+        <button
+          type="button"
+          onClick={loadResultsAndAnalytics}
+          disabled={loading}
+        >
+          {loading ? "Refreshing..." : "Refresh Results"}
+        </button>
       </header>
 
-      {/* tax result */}
-      <section id="results-analytics-tax">
+      {/* Display page-level errors without crashing the page. */}
+      {error && (
+        <div role="alert" aria-live="polite">
+          <strong>Unable to load all results</strong>
+          <p>{error.message}</p>
+        </div>
+      )}
 
+      <section id="results-analytics-tax">
         <TaxResult
           result={taxResult}
           loading={loading}
           error={error}
         />
-
       </section>
 
-      {/* financial summary */}
       <section id="results-analytics-summary">
-
         <FinancialSummary
           summary={financialSummary}
           loading={loading}
           error={error}
         />
-
       </section>
 
-      {/* financial analytics */}
       <section id="results-analytics-chart">
-
         <AnalyticsChart
           data={analyticsData}
           loading={loading}
           error={error}
         />
-
       </section>
 
-      {/* fraud alerts */}
       <section id="results-analytics-fraud">
-
         <FraudAlerts
           alerts={fraudAlerts}
           loading={loading}
           error={error}
           onStatusChange={handleFraudAlertStatusChange}
         />
-
       </section>
-
     </main>
   );
 }
 
-// export results and analytics page
 export default ResultsAnalytics;

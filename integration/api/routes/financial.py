@@ -1,7 +1,7 @@
 """Income, expense, bank-transaction, and financial-summary endpoints."""
 from datetime import date
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from database_manager.connection import get_db
 from database_manager.models import BankTransaction, Expense, Income, User
@@ -84,3 +84,35 @@ def list_expenses(user_id: int, db: Session = Depends(get_db)):
     rows = db.query(Expense).filter(Expense.user_id == user_id).order_by(Expense.expense_date.desc()).all()
     return [{"expense_id": r.expense_id, "category": r.category, "party_name": r.party_name,
              "amount": float(r.amount), "expense_date": r.expense_date.isoformat()} for r in rows]
+
+@router.post("/upload")
+async def upload_statement(
+    user_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Parse CSV or Excel statements and ingest transactions directly into database."""
+    _require_user(db, user_id)
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    from data_input.importers.csv_importer import process_file_stream, ImporterError
+    try:
+        summary = process_file_stream(contents, file.filename or "statement.csv", user_id)
+        _record_fraud_scan(db, user_id)
+        return {
+            "ok": summary.status in ("success", "no_new_records"),
+            "status": summary.status,
+            "filename": file.filename,
+            "transaction_type": summary.transaction_type.value if hasattr(summary.transaction_type, "value") else str(summary.transaction_type),
+            "total_rows": summary.total_rows,
+            "imported": summary.sent_count,
+            "duplicates": summary.duplicate_count,
+            "invalid": summary.invalid_count,
+            "message": summary.message or f"Successfully imported {summary.sent_count} records."
+        }
+    except ImporterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to process statement: {exc}") from exc

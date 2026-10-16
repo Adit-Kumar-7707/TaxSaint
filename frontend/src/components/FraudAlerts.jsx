@@ -1,294 +1,163 @@
 // TaxSaint fraud alerts component
-
 import React from "react";
 
-// fraud alerts component
 function FraudAlerts({
   alerts = [],
   loading = false,
   error = null,
   onStatusChange = null
 }) {
+  const formatCurrency = (value) => {
+    const numericValue = Number(value) || 0;
+    return `₹${numericValue.toLocaleString("en-IN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })}`;
+  };
 
-// format currency value
-const formatCurrency = (value) => {
-  // convert value into a number
-  const numericValue = Number(value) || 0;
+  const formatAlertType = (alertType) => {
+    if (!alertType) return "Financial Anomaly";
+    return String(alertType)
+      .toLowerCase()
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  };
 
-  // format value using Indian currency notation
-  return `₹${numericValue.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-};
-
-// format alert type
-const formatAlertType = (alertType) => {
-  // handle missing alert type
-  if (!alertType) {
-    return "Financial Alert";
-  }
-
-  // convert alert type into readable text
-  return String(alertType)
-    .toLowerCase()
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-};
-
-// render loading state
-const renderLoading = () => {
-  // return loading state
-  return (
-    <div
-      id="fraud-alerts-loading"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-    >
-      <p>Loading fraud alerts...</p>
+  const renderLoading = () => (
+    <div className="content-card" style={{ textAlign: "center", padding: "2rem" }}>
+      <p style={{ color: "var(--text-muted)" }}>Scanning transactions for anomalies...</p>
     </div>
   );
-};
 
-// render error state
-const renderError = () => {
-  // determine readable error message
-  const errorMessage =
-    error instanceof Error
-      ? error.message
-      : String(error || "Unable to load fraud alerts.");
-
-  // return error state
-  return (
-    <div
-      id="fraud-alerts-error"
-      role="alert"
-      aria-live="assertive"
-    >
-      <h3>Unable to load fraud alerts</h3>
-
-      <p>
-        {errorMessage}
-      </p>
-    </div>
-  );
-};
-
-// render empty state
-const renderEmpty = () => {
-  // return empty state
-  return (
-    <div
-      id="fraud-alerts-empty"
-      role="status"
-      aria-live="polite"
-    >
-      <h3>No Fraud Alerts</h3>
-
-      <p>
-        No potential financial issues require verification.
-      </p>
-    </div>
-  );
-};
-
-// render alert status
-const renderStatus = (status) => {
-  // normalize status value
-  const normalizedStatus = String(
-    status || "NEEDS_VERIFICATION"
-  ).toUpperCase();
-
-  // return readable status
-  switch (normalizedStatus) {
-    case "VERIFIED":
-      return (
-        <span className="fraud-alert-status fraud-alert-status-verified">
-          VERIFIED
-        </span>
-      );
-
-    case "DISMISSED":
-      return (
-        <span className="fraud-alert-status fraud-alert-status-dismissed">
-          DISMISSED
-        </span>
-      );
-
-    case "NEEDS_VERIFICATION":
-    default:
-      return (
-        <span className="fraud-alert-status fraud-alert-status-pending">
-          NEEDS VERIFICATION
-        </span>
-      );
-  }
-};
-
-// handle alert status change
-const handleStatusChange = (alertId, status) => {
-  // validate callback
-  if (typeof onStatusChange !== "function") {
-    return;
-  }
-
-  // validate alert identifier
-  if (!alertId) {
-    return;
-  }
-
-  // normalize status
-  const normalizedStatus = String(status || "").toUpperCase();
-
-  // allow only supported statuses
-  const allowedStatuses = [
-    "NEEDS_VERIFICATION",
-    "VERIFIED",
-    "DISMISSED"
-  ];
-
-  if (!allowedStatuses.includes(normalizedStatus)) {
-    return;
-  }
-
-  // send status change to parent component
-  onStatusChange(alertId, normalizedStatus);
-};
-
-// render individual alert
-const renderAlert = (alert) => {
-  // return alert card
-  return (
-    <article
-      key={alert.id}
-      className="fraud-alert-card"
-    >
-
-      {/* alert header */}
-      <div className="fraud-alert-header">
-
-        <h3>
-          {formatAlertType(alert.alertType)}
-        </h3>
-
-        {renderStatus(alert.status)}
-
+  const renderError = () => {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error || "Unable to load fraud alerts.");
+    return (
+      <div className="taxsaint-banner error" role="alert">
+        <span>{errorMessage}</span>
       </div>
+    );
+  };
 
-      {/* alert message */}
-      <p className="fraud-alert-message">
-        {alert.message || "This transaction requires verification."}
+  const renderEmpty = () => (
+    <div className="content-card" style={{ textAlign: "center", padding: "2rem" }}>
+      <h3 style={{ color: "var(--success)" }}>✅ Clean Financial Record</h3>
+      <p style={{ color: "var(--text-muted)", marginTop: "0.4rem" }}>
+        No duplicate expenses or income mismatches detected. All records reconcile cleanly.
       </p>
+    </div>
+  );
 
-      {/* alert amount */}
-      {alert.amount !== undefined &&
-        alert.amount !== null && (
-          <div className="fraud-alert-detail">
+  const renderStatus = (status) => {
+    const normalized = String(status || "NEEDS_VERIFICATION").toUpperCase();
+    switch (normalized) {
+      case "VERIFIED":
+        return <span className="badge badge-success">Verified</span>;
+      case "DISMISSED":
+        return <span className="badge badge-muted">Dismissed</span>;
+      case "NEEDS_VERIFICATION":
+      default:
+        return <span className="badge badge-warning">Needs Review</span>;
+    }
+  };
 
-            <span>
-              Amount
-            </span>
+  const handleStatusChange = (alertId, status) => {
+    if (typeof onStatusChange === "function" && alertId) {
+      onStatusChange(alertId, status);
+    }
+  };
 
-            <strong>
-              {formatCurrency(alert.amount)}
-            </strong>
-
-          </div>
-        )}
-
-      {/* alert party */}
-      {alert.partyName && (
-        <div className="fraud-alert-detail">
-
-          <span>
-            Party
-          </span>
-
-          <strong>
-            {alert.partyName}
-          </strong>
-
+  const renderAlert = (alert) => {
+    const alertId = alert.id ?? alert.alert_id;
+    return (
+      <article
+        key={alertId}
+        className="content-card"
+        style={{
+          borderLeft: alert.status === "VERIFIED" ? "4px solid var(--success)" : alert.status === "DISMISSED" ? "4px solid var(--text-muted)" : "4px solid var(--warning)",
+          marginBottom: "1rem"
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+          <h4 style={{ fontSize: "1.05rem", fontWeight: "600", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span>⚠️</span>
+            <span>{formatAlertType(alert.alertType ?? alert.fraud_type)}</span>
+          </h4>
+          {renderStatus(alert.status)}
         </div>
-      )}
 
-      {/* alert actions */}
-      <div className="fraud-alert-actions">
+        <p style={{ fontSize: "0.92rem", color: "var(--text-main)", marginBottom: "1rem" }}>
+          {alert.message || alert.reason || "This transaction requires verification."}
+        </p>
 
-        <button
-          type="button"
-          onClick={() =>
-            handleStatusChange(
-              alert.id,
-              "VERIFIED"
-            )
-          }
-        >
-          Verify
-        </button>
+        <div style={{ display: "flex", gap: "1.5rem", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
+          {alert.partyName && (
+            <div>
+              <span>Counterparty: </span>
+              <strong style={{ color: "var(--text-main)" }}>{alert.partyName}</strong>
+            </div>
+          )}
+          {(alert.amount !== undefined || alert.difference_amount !== undefined) && (
+            <div>
+              <span>Discrepancy / Amount: </span>
+              <strong style={{ color: "var(--danger)" }}>
+                {formatCurrency(alert.amount ?? alert.difference_amount)}
+              </strong>
+            </div>
+          )}
+        </div>
 
-        <button
-          type="button"
-          onClick={() =>
-            handleStatusChange(
-              alert.id,
-              "DISMISSED"
-            )
-          }
-        >
-          Dismiss
-        </button>
+        <div style={{ display: "flex", gap: "0.75rem" }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ padding: "0.35rem 0.85rem", fontSize: "0.82rem" }}
+            onClick={() => handleStatusChange(alertId, "VERIFIED")}
+            disabled={alert.status === "VERIFIED"}
+          >
+            Mark Verified
+          </button>
 
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ padding: "0.35rem 0.85rem", fontSize: "0.82rem" }}
+            onClick={() => handleStatusChange(alertId, "DISMISSED")}
+            disabled={alert.status === "DISMISSED"}
+          >
+            Dismiss Alert
+          </button>
+        </div>
+      </article>
+    );
+  };
+
+  const renderAlerts = () => {
+    if (!Array.isArray(alerts) || alerts.length === 0) {
+      return renderEmpty();
+    }
+    return (
+      <div id="fraud-alerts-list">
+        {alerts.map((alert) => renderAlert(alert))}
       </div>
+    );
+  };
 
-    </article>
-  );
-};
-
-// render all fraud alerts
-const renderAlerts = () => {
-  // validate alert collection
-  if (!Array.isArray(alerts) || alerts.length === 0) {
-    return renderEmpty();
-  }
-
-  // return alert collection
-  return (
-    <div id="fraud-alerts-list">
-      {alerts.map((alert) => renderAlert(alert))}
-    </div>
-  );
-};
-
-  // fraud alerts component layout
   return (
     <section id="taxsaint-fraud-alerts">
-
-      {/* component heading */}
-      <header id="fraud-alerts-header">
-        <h2>Fraud Alerts</h2>
-
-        <p>
-          Review financial records that may require verification.
+      <header style={{ marginBottom: "1.25rem" }}>
+        <h2>Potential Financial Discrepancies</h2>
+        <p style={{ color: "var(--text-muted)", fontSize: "0.88rem" }}>
+          Algorithmic anomaly flags requiring accountant or user verification before tax filing.
         </p>
       </header>
 
-// component content
-<div id="fraud-alerts-content">
-
-  {loading
-    ? renderLoading()
-    : error
-      ? renderError()
-      : renderAlerts()
-  }
-
-</div>
-
+      <div id="fraud-alerts-content">
+        {loading ? renderLoading() : error ? renderError() : renderAlerts()}
+      </div>
     </section>
   );
 }
 
-// export fraud alerts component
 export default FraudAlerts;

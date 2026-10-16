@@ -968,6 +968,33 @@ def exit_code_for(summary: ImportSummary) -> int:
     return 0 if summary.status in (STATUS_SUCCESS, STATUS_NO_NEW_RECORDS) else 1
 
 
+def process_file_stream(
+    file_bytes: bytes,
+    filename: str,
+    user_id: int,
+    api_base_url: Optional[str] = None,
+) -> ImportSummary:
+    """
+    In-memory file stream ingestion for web uploads.
+    Supports CSV and Excel without touching local temporary files on disk.
+    """
+    import io
+    name_lower = filename.lower()
+    if name_lower.endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+    elif any(name_lower.endswith(ext) for ext in (".xlsx", ".xls", ".xlsm")):
+        df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+    else:
+        raise ImporterError(f"Unsupported file type: {filename}. Supported formats are .csv, .xlsx, .xls")
+
+    return process_dataframe(
+        df,
+        source_path=filename,
+        user_id=user_id,
+        api_base_url=api_base_url,
+    )
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Command-line entry point for CSV files. Returns the process exit code."""
     parser = argparse.ArgumentParser(description="Import a CSV of income, expense or bank transactions into TaxSaint.")
