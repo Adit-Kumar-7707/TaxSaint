@@ -14,7 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_DATABASE = f"sqlite:///{PROJECT_ROOT / 'taxsaint.db'}"
 DATABASE_URL = os.getenv("DATABASE_URL", _DEFAULT_DATABASE)
 
-# Supabase commonly provides postgres:// or postgresql:// URLs. psycopg 3 is used.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
 elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
@@ -52,7 +51,6 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     """Create missing tables and seed initial tax rules for a fresh database."""
-    # Import models so SQLAlchemy registers all table definitions before create_all.
     from database_manager.models import (  # noqa: F401
         BankTransaction,
         Expense,
@@ -66,7 +64,6 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
 
-    # Seed only an empty tax-rule table. Existing rules are never overwritten.
     with SessionLocal() as db:
         if db.query(TaxSettings).count() == 0:
             db.add(TaxSettings(
