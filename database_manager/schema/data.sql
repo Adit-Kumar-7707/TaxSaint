@@ -7,7 +7,8 @@ CREATE TABLE users (
     user_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name         VARCHAR(100) NOT NULL,
     email        VARCHAR(100) UNIQUE NOT NULL,
-    password     VARCHAR(255) NOT NULL,
+    password     VARCHAR(255), -- optional legacy column; authentication is not implemented
+    phone        VARCHAR(20),
     worker_type  VARCHAR(10) NOT NULL
                  CHECK (worker_type IN ('SALARIED', 'BUSINESS'))
 );
@@ -56,7 +57,19 @@ CREATE TABLE tax_slabs (
 ); -- tax rule storage
 
 
--- 6. Tax calculation results
+-- 6. Tax calculation settings (used by the C++ engine)
+CREATE TABLE tax_settings (
+    id                  INT PRIMARY KEY,
+    financial_year      VARCHAR(10) NOT NULL,
+    standard_deduction  DECIMAL(12,2) NOT NULL,
+    rebate_limit        DECIMAL(12,2) NOT NULL,
+    cess_rate           DECIMAL(5,2) NOT NULL
+);
+
+INSERT INTO tax_settings (id, financial_year, standard_deduction, rebate_limit, cess_rate)
+VALUES (1, '2026-27', 75000, 1200000, 4);
+
+-- 7. Tax calculation results
 CREATE TABLE tax_results (
     result_id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id          INT NOT NULL REFERENCES users(user_id),
@@ -70,7 +83,7 @@ CREATE TABLE tax_results (
 ); -- calculator output
 
 
--- 7. Fraud alerts
+-- 8. Fraud alerts
 -- transaction_id / matched_transaction_id can point to expenses, income
 -- or bank_transactions, so the *_source column says which table.
 CREATE TABLE fraud_alerts (
@@ -104,3 +117,9 @@ VALUES
 (1600000, 2000000, 20),
 (2000000, 2400000, 25),
 (2400000, NULL,    30); -- initial tax slabs
+
+
+-- Migration for a database created with the earlier users table.
+-- Run these statements separately only if the table already exists.
+-- ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+-- ALTER TABLE users ALTER COLUMN password DROP NOT NULL;
