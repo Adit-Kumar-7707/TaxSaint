@@ -172,3 +172,87 @@ def save_income_mismatch_alerts(user_id: int):
                 saved_alerts.append(alert_id)
 
     return saved_alerts
+
+def find_expense_mismatches(user_id: int):
+    with engine.connect() as connection:
+        result = connection.execute(
+            text("""
+                SELECT
+                    e.expense_id,
+                    e.user_id,
+                    e.party_name,
+                    e.amount AS recorded_expense,
+                    e.expense_date,
+                    b.transaction_id,
+                    b.amount AS bank_amount,
+                    b.transaction_date,
+                    ABS(e.amount - b.amount) AS difference_amount
+                FROM expenses e
+                JOIN bank_transactions b
+                  ON e.user_id = b.user_id
+                 AND LOWER(TRIM(e.party_name)) =
+                     LOWER(TRIM(b.party_name))
+                 AND e.expense_date = b.transaction_date
+                WHERE e.user_id = :user_id
+                  AND b.transaction_type = 'EXPENSE'
+                  AND e.amount <> b.amount
+                ORDER BY e.expense_date DESC
+            """),
+            {"user_id": user_id},
+        )
+
+        return [dict(row) for row in result.mappings().all()]
+    
+def save_expense_mismatch_alerts(user_id: int):
+    mismatches = find_expense_mismatches(user_id)
+    saved_alerts = []
+
+    with engine.begin() as connection:
+        for mismatch in mismatches:
+            result = connection.execute(
+                text("""
+                    INSERT INTO fraud_alerts (
+                        user_id,
+                        fraud_type,
+                        transaction_source,
+                        transaction_id,
+                        matched_source,
+                        matched_transaction_id,
+                        difference_amount,
+                        reason
+                    )
+                    VALUES (
+                        :user_id,
+                        'EXPENSE_MISMATCH',
+                        'EXPENSE',
+                        :transaction_id,
+                        'BANK',
+                        :matched_transaction_id,
+                        :difference_amount,
+                        :reason
+                    )
+                    ON CONFLICT (
+                        fraud_type,
+                        transaction_source,
+                        transaction_id
+                    ) DO NOTHING
+                    RETURNING alert_id
+                """),
+                {
+                    "user_id": user_id,
+                    "transaction_id": mismatch["expense_id"],
+                    "matched_transaction_id": mismatch["transaction_id"],
+                    "difference_amount": mismatch["difference_amount"],
+                    "reason": (
+                        f"Expense and bank amount mismatch for "
+                        f"{mismatch['party_name']}"
+                    ),
+                },
+            )
+
+            alert_id = result.scalar_one_or_none()
+
+            if alert_id is not None:
+                saved_alerts.append(alert_id)
+
+    return saved_alerts

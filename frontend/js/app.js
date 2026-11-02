@@ -3,6 +3,149 @@
 // 1. LOAD SAVED DATA
 let incomes = JSON.parse(localStorage.getItem("taxsaint_incomes") || "[]");
 let expenses = JSON.parse(localStorage.getItem("taxsaint_expenses") || "[]");
+let bankTransactions = [];
+
+// LOAD INCOME FROM DATABASE
+async function loadIncomeFromBackend() {
+    try {
+        const result = await apiRequest(`/income?user_id=${USER_ID}`);
+
+        incomes = result.income.map(item => ({
+            income_id: item.income_id,
+            source: item.source,
+            party_name: item.party_name,
+            amount: Number(item.amount),
+            date: item.income_date
+        }));
+
+        updateApplication();
+
+    } catch (error) {
+        console.error("Unable to load income:", error);
+        alert("Could not load income from database: " + error.message);
+    }
+}
+
+// LOAD EXPENSES FROM DATABASE
+async function loadExpensesFromBackend() {
+    try {
+        const result = await apiRequest(`/expenses?user_id=${USER_ID}`);
+
+        expenses = result.expenses.map(item => ({
+            expense_id: item.expense_id,
+            category: item.category,
+            party_name: item.party_name,
+            amount: Number(item.amount),
+            date: item.expense_date
+        }));
+
+        updateApplication();
+
+    } catch (error) {
+        console.error("Unable to load expenses:", error);
+        alert("Could not load expenses: " + error.message);
+    }
+}
+
+// LOAD BANK TRANSACTIONS FROM DATABASE
+async function loadBankTransactionsFromBackend() {
+    try {
+        const data = await apiRequest(
+            `/bank-transactions?user_id=${USER_ID}`
+        );
+
+        bankTransactions = data.bank_transactions || [];
+        renderBankTransactions();
+
+    } catch (error) {
+        console.error("Error loading bank transactions:", error);
+    }
+}
+
+// DISPLAY BANK TRANSACTIONS
+function renderBankTransactions() {
+    const bankList = document.getElementById("bank-list");
+    const bankEmpty = document.getElementById("bank-empty");
+
+    if (!bankList || !bankEmpty) return;
+
+    bankList.innerHTML = "";
+
+    if (bankTransactions.length === 0) {
+        bankEmpty.style.display = "block";
+        return;
+    }
+
+    bankEmpty.style.display = "none";
+
+    bankTransactions.forEach(transaction => {
+        const row = document.createElement("tr");
+
+        row.innerHTML = `
+            <td>${transaction.party_name}</td>
+            <td>${transaction.transaction_type}</td>
+            <td>₹${transaction.amount}</td>
+            <td>${transaction.transaction_date}</td>
+        `;
+
+        bankList.appendChild(row);
+    });
+}
+
+// ADD BANK TRANSACTION TO DATABASE
+const bankForm = document.getElementById("bank-transaction-form");
+
+if (bankForm) {
+    bankForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+
+        const transaction = {
+            user_id: USER_ID,
+            party_name: document.getElementById("bank-party").value,
+            transaction_type: document.getElementById("bank-type").value,
+            amount: parseFloat(document.getElementById("bank-amount").value),
+            transaction_date: document.getElementById("bank-date").value
+        };
+
+        try {
+            await apiRequest("/bank-transactions", {
+                method: "POST",
+                body: JSON.stringify(transaction)
+            });
+
+            await loadBankTransactionsFromBackend();
+
+            bankForm.reset();
+            alert("Bank transaction added successfully!");
+
+        } catch (error) {
+            alert("Error: " + error.message);
+        }
+    });
+}
+
+// BACKEND API CONFIGURATION
+const API_URL = "http://127.0.0.1:8000";
+const USER_ID = 1;
+
+// SEND REQUEST TO BACKEND
+async function apiRequest(endpoint, options = {}) {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...options.headers
+        }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(data.detail || "API request failed");
+    }
+
+    return data;
+}
 
 // 2. SAVE DATA
 function saveData() {
@@ -128,42 +271,83 @@ function renderIncome() {
     });
 }
 
-// 8. ADD INCOME
+// 8. ADD INCOME - BACKEND INTEGRATION
 const incomeForm = document.getElementById("income-form");
 
 if (incomeForm) {
-    incomeForm.addEventListener("submit", function(event) {
+    incomeForm.addEventListener("submit", async function(event) {
         event.preventDefault();
 
         const source = document.getElementById("income-source").value.trim();
+        const partyName = document.getElementById("income-party").value.trim();
         const amount = Number(document.getElementById("income-amount").value);
         const date = document.getElementById("income-date").value;
 
-        if (!source || amount <= 0 || !date) {
+        if (!source || !partyName || amount <= 0 || !date) {
             alert("Please enter valid income details.");
             return;
         }
 
-        incomes.push({
-            source: source,
-            amount: amount,
-            date: date
-        });
+        try {
+            const result = await apiRequest("/income", {
+                method: "POST",
+                body: JSON.stringify({
+                    user_id: USER_ID,
+                    source: source,
+                    party_name: partyName,
+                    amount: amount,
+                    income_date: date
+                })
+            });
 
-        saveData();
-        updateApplication();
-        incomeForm.reset();
+            incomes.push({
+                income_id: result.income_id,
+                source: source,
+                party_name: partyName,
+                amount: amount,
+                date: date
+            });
 
-        alert("Income added successfully!");
+            saveData();
+            updateApplication();
+            incomeForm.reset();
+
+            alert("Income saved successfully in database!");
+
+        } catch (error) {
+            console.error("Income save error:", error);
+            alert("Unable to save income: " + error.message);
+        }
     });
 }
 
-// 9. DELETE INCOME
-function deleteIncome(index) {
-    if (confirm("Are you sure you want to delete this income?")) {
+async function deleteIncome(index) {
+    const item = incomes[index];
+
+    if (!item || !item.income_id) {
+        alert("Income ID not found. Please reload the records.");
+        return;
+    }
+
+    if (!confirm("Are you sure you want to delete this income?")) {
+        return;
+    }
+
+    try {
+        await apiRequest(
+            `/income/${item.income_id}?user_id=${USER_ID}`,
+            { method: "DELETE" }
+        );
+
         incomes.splice(index, 1);
         saveData();
         updateApplication();
+
+        alert("Income deleted successfully!");
+
+    } catch (error) {
+        console.error("Delete income error:", error);
+        alert("Unable to delete income: " + error.message);
     }
 }
 
@@ -209,42 +393,85 @@ function renderExpenses() {
     });
 }
 
-// 11. ADD EXPENSE
+// 11. ADD EXPENSE - BACKEND INTEGRATION
 const expenseForm = document.getElementById("expense-form");
 
 if (expenseForm) {
-    expenseForm.addEventListener("submit", function(event) {
+    expenseForm.addEventListener("submit", async function(event) {
         event.preventDefault();
 
         const category = document.getElementById("expense-category").value.trim();
+        const partyName = document.getElementById("expense-party").value.trim();
         const amount = Number(document.getElementById("expense-amount").value);
         const date = document.getElementById("expense-date").value;
 
-        if (!category || amount <= 0 || !date) {
+        if (!category || !partyName || amount <= 0 || !date) {
             alert("Please enter valid expense details.");
             return;
         }
 
-        expenses.push({
-            category: category,
-            amount: amount,
-            date: date
-        });
+        try {
+            const result = await apiRequest("/expenses", {
+                method: "POST",
+                body: JSON.stringify({
+                    user_id: USER_ID,
+                    category: category,
+                    party_name: partyName,
+                    amount: amount,
+                    expense_date: date
+                })
+            });
 
-        saveData();
-        updateApplication();
-        expenseForm.reset();
+            expenses.push({
+                expense_id: result.expense_id,
+                category: category,
+                party_name: partyName,
+                amount: amount,
+                date: date
+            });
 
-        alert("Expense added successfully!");
+            saveData();
+            updateApplication();
+            expenseForm.reset();
+
+            alert("Expense saved successfully in database!");
+
+        } catch (error) {
+            console.error("Expense save error:", error);
+            alert("Unable to save expense: " + error.message);
+        }
     });
 }
 
-// 12. DELETE EXPENSE
-function deleteExpense(index) {
-    if (confirm("Are you sure you want to delete this expense?")) {
+// DELETE EXPENSE - BACKEND INTEGRATION
+
+async function deleteExpense(index) {
+    const item = expenses[index];
+
+    if (!item || !item.expense_id) {
+        alert("Expense ID not found. Please reload the records.");
+        return;
+    }
+
+    if (!confirm("Are you sure you want to delete this expense?")) {
+        return;
+    }
+
+    try {
+        await apiRequest(
+            `/expenses/${item.expense_id}?user_id=${USER_ID}`,
+            { method: "DELETE" }
+        );
+
         expenses.splice(index, 1);
         saveData();
         updateApplication();
+
+        alert("Expense deleted successfully!");
+
+    } catch (error) {
+        console.error("Delete expense error:", error);
+        alert("Unable to delete expense: " + error.message);
     }
 }
 
@@ -299,37 +526,46 @@ function renderFraudAlerts() {
     });
 }
 
-// 14. TAX PLANNER
+// 14. TAX PLANNER - BACKEND INTEGRATION
+
 const taxButton = document.getElementById("tax-calculate");
 
 if (taxButton) {
-    taxButton.addEventListener("click", function() {
-        const incomeInput = document.getElementById("tax-income");
-        const expenseInput = document.getElementById("tax-expenses");
+    taxButton.addEventListener("click", async function () {
+
         const message = document.getElementById("tax-message");
+        const year = document.getElementById("tax-year").value;
 
-        if (!incomeInput || !expenseInput || !message) return;
+        taxButton.disabled = true;
+        taxButton.textContent = "Calculating...";
 
-        const income = Number(incomeInput.value);
-        const expenseAmount = Number(expenseInput.value);
+        message.textContent = "Calculating tax using saved records...";
 
-        if (
-            incomeInput.value === "" ||
-            expenseInput.value === "" ||
-            income < 0 ||
-            expenseAmount < 0
-        ) {
-            message.textContent = "Please enter valid amounts.";
-            return;
+        try {
+            const result = await apiRequest(
+                `/tax/calculate?user_id=${USER_ID}&financial_year=${encodeURIComponent(year)}`,
+                { method: "POST" }
+            );
+
+            const tax = result.tax;
+
+            message.textContent =
+                `Gross Income: ${formatMoney(tax.gross_income)} | ` +
+                `Expenses: ${formatMoney(tax.expenses)} | ` +
+                `Taxable Income: ${formatMoney(tax.taxable_income)} | ` +
+                `Total Tax: ${formatMoney(tax.total_tax)}. ` +
+                (result.notice || "");
+
+        } catch (error) {
+            console.error("Tax calculation error:", error);
+            message.textContent = "Tax calculation failed: " + error.message;
+
+        } finally {
+            taxButton.disabled = false;
+            taxButton.textContent = "Calculate Tax";
         }
-
-        const taxableIncome = Math.max(0, income - expenseAmount);
-
-        message.textContent =
-            `Estimated taxable income: ${formatMoney(taxableIncome)}. Connect the tax calculation engine for an actual tax estimate.`;
     });
 }
-
 // 15. REPORTS
 function updateReports() {
     const totalIncome = getTotal(incomes);
@@ -404,7 +640,142 @@ function updateApplication() {
 }
 
 // 18. INITIALIZE APPLICATION
-updateApplication();
 showPage("overview");
 
+async function initializeApplication() {
+    await Promise.all([
+        loadIncomeFromBackend(),
+        loadExpensesFromBackend(),
+        loadBankTransactionsFromBackend()
+    ]);
+}
+
+initializeApplication();
+
 console.log("TaxSaint frontend loaded successfully!");
+// SAINTSHIELD - DUPLICATE EXPENSE SCAN
+
+const scanButton = document.getElementById("scan-duplicates");
+
+if (scanButton) {
+    scanButton.addEventListener("click", async function () {
+
+        const alertBox = document.getElementById("fraud-alerts");
+
+        scanButton.disabled = true;
+        scanButton.textContent = "Scanning...";
+        alertBox.textContent = "Checking expenses for duplicates...";
+
+        try {
+            // Run duplicate expense scan
+            await apiRequest(
+                `/fraud/duplicate-expenses/scan?user_id=${USER_ID}`,
+                { method: "POST" }
+            );
+            // Run income mismatch scan
+await apiRequest(
+    `/fraud/income-mismatches/scan?user_id=${USER_ID}`,
+    { method: "POST" }
+);
+
+// Run expense mismatch scan
+await apiRequest(
+    `/fraud/expense-mismatches/scan?user_id=${USER_ID}`,
+    { method: "POST" }
+);
+   
+
+
+
+            // Fetch detected alerts
+            const result = await apiRequest(
+                `/fraud/alerts?user_id=${USER_ID}`
+            );
+
+            const alerts = Array.isArray(result)
+                ? result
+                : (result.alerts || []);
+
+            if (alerts.length === 0) {
+                alertBox.innerHTML = "<p>No fraud alerts found.</p>";
+                return;
+            }
+
+   alertBox.innerHTML = alerts.map(alert => `
+    <div class="alert-item">
+        <h4>${alert.fraud_type || "Financial Alert"}</h4>
+
+        <p>${alert.reason || "Please review this entry."}</p>
+
+        <p>Transaction ID: ${alert.transaction_id ?? "N/A"}</p>
+
+        <p>Status: ${alert.status || "PENDING"}</p>
+
+        <button class="verify-alert" data-id="${alert.alert_id}">
+            Verify
+        </button>
+
+        <button class="dismiss-alert" data-id="${alert.alert_id}">
+            Dismiss
+        </button>
+    </div>
+`).join("");
+// Update fraud alert status
+
+document.querySelectorAll(".verify-alert, .dismiss-alert")
+    .forEach(button => {
+
+        button.addEventListener("click", async function () {
+
+            const alertId = this.dataset.id;
+
+            const status = this.classList.contains("verify-alert")
+                ? "VERIFIED"
+                : "DISMISSED";
+
+            try {
+                await apiRequest(
+                    `/fraud/alerts/${alertId}?user_id=${USER_ID}`,
+                    {
+                        method: "PATCH",
+                        body: JSON.stringify({ status: status })
+                    }
+                );
+
+                alert("Alert status updated successfully!");
+
+                // Refresh alerts
+                const result = await apiRequest(
+                    `/fraud/alerts?user_id=${USER_ID}`
+                );
+
+                const updatedAlerts = result.alerts || [];
+
+                // Refresh display
+                alertBox.innerHTML = updatedAlerts.map(alert => `
+                    <div class="alert-item">
+                        <h4>${alert.fraud_type || "Financial Alert"}</h4>
+                        <p>${alert.reason || "Please review this entry."}</p>
+                        <p>Transaction ID: ${alert.transaction_id ?? "N/A"}</p>
+                        <p>Status: ${alert.status || "PENDING"}</p>
+                        <button class="verify-alert" data-id="${alert.alert_id}">Verify</button>
+                        <button class="dismiss-alert" data-id="${alert.alert_id}">Dismiss</button>
+                    </div>
+                `).join("");
+
+            } catch (error) {
+                alert("Unable to update alert: " + error.message);
+            }
+        });
+    });
+
+        } catch (error) {
+            console.error("Duplicate scan error:", error);
+            alertBox.textContent = "Scan failed: " + error.message;
+
+        } finally {
+            scanButton.disabled = false;
+            scanButton.textContent = "Scan Duplicate Expenses";
+        }
+    });
+}

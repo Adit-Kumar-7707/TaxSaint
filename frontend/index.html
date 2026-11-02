@@ -35,6 +35,10 @@
                 <span>↘</span> Expenses
             </a>
 
+            <a href="#" data-page="bank">
+              <span>⇄</span> Bank Transactions
+            </a>
+            
             <a href="#" data-page="tax">
                 <span>₹</span> Tax Planner
             </a>
@@ -167,42 +171,52 @@
 
                 <form id="income-form">
 
-                    <div class="form-grid">
+    <div class="form-grid">
 
-                        <div class="form-group">
-                            <label for="income-source">Income Source</label>
-                            <input
-                                type="text"
-                                id="income-source"
-                                placeholder="e.g. Salary, Freelancing"
-                                required
-                            >
-                        </div>
+        <div class="form-group">
+            <label for="income-source">Income Source</label>
+            <input
+                type="text"
+                id="income-source"
+                placeholder="e.g. Salary, Freelancing"
+                required
+            >
+        </div>
 
-                        <div class="form-group">
-                            <label for="income-amount">Amount (₹)</label>
-                            <input
-                                type="number"
-                                id="income-amount"
-                                placeholder="Enter amount"
-                                min="1"
-                                step="0.01"
-                                required
-                            >
-                        </div>
+        <div class="form-group">
+            <label for="income-party">Party Name</label>
+            <input
+                type="text"
+                id="income-party"
+                placeholder="e.g. ABC Company"
+                required
+            >
+        </div>
 
-                        <div class="form-group">
-                            <label for="income-date">Date</label>
-                            <input type="date" id="income-date" required>
-                        </div>
+        <div class="form-group">
+            <label for="income-amount">Amount (₹)</label>
+            <input
+                type="number"
+                id="income-amount"
+                placeholder="Enter amount"
+                min="1"
+                step="0.01"
+                required
+            >
+        </div>
 
-                    </div>
+        <div class="form-group">
+            <label for="income-date">Date</label>
+            <input type="date" id="income-date" required>
+        </div>
 
-                    <button type="submit" class="primary-btn">
-                        + Add Income
-                    </button>
+    </div>
 
-                </form>
+    <button type="submit" class="primary-btn">
+        + Add Income
+    </button>
+
+</form>
 
             </div>
 
@@ -252,42 +266,52 @@
 
                 <form id="expense-form">
 
-                    <div class="form-grid">
+    <div class="form-grid">
 
-                        <div class="form-group">
-                            <label for="expense-category">Category</label>
-                            <input
-                                type="text"
-                                id="expense-category"
-                                placeholder="e.g. Food, Travel"
-                                required
-                            >
-                        </div>
+        <div class="form-group">
+            <label for="expense-category">Category</label>
+            <input
+                type="text"
+                id="expense-category"
+                placeholder="e.g. Food, Travel"
+                required
+            >
+        </div>
 
-                        <div class="form-group">
-                            <label for="expense-amount">Amount (₹)</label>
-                            <input
-                                type="number"
-                                id="expense-amount"
-                                placeholder="Enter amount"
-                                min="1"
-                                step="0.01"
-                                required
-                            >
-                        </div>
+        <div class="form-group">
+            <label for="expense-party">Party Name</label>
+            <input
+                type="text"
+                id="expense-party"
+                placeholder="e.g. ABC Store"
+                required
+            >
+        </div>
 
-                        <div class="form-group">
-                            <label for="expense-date">Date</label>
-                            <input type="date" id="expense-date" required>
-                        </div>
+        <div class="form-group">
+            <label for="expense-amount">Amount (₹)</label>
+            <input
+                type="number"
+                id="expense-amount"
+                placeholder="Enter amount"
+                min="1"
+                step="0.01"
+                required
+            >
+        </div>
 
-                    </div>
+        <div class="form-group">
+            <label for="expense-date">Date</label>
+            <input type="date" id="expense-date" required>
+        </div>
 
-                    <button type="submit" class="primary-btn">
-                        + Add Expense
-                    </button>
+    </div>
 
-                </form>
+    <button type="submit" class="primary-btn">
+        + Add Expense
+    </button>
+
+</form>
 
             </div>
 
@@ -320,56 +344,136 @@
         </section>
 
 
-        <!-- TAX PLANNER PAGE -->
-        <section class="page" id="page-tax" hidden>
+    
+      <!-- BANK TRANSACTIONS PAGE -->
+<section class="page" id="page-bank" hidden>
 
-            <div class="section-heading">
-                <div>
-                    <h2>Tax Planner</h2>
-                    <p>Estimate your taxable income.</p>
-                </div>
-            </div>
+    <div class="section-heading">
+        <div>
+            <h2>Bank Transactions</h2>
+            <p>Track your bank income and expenses.</p>
+        </div>
+    </div>
 
+    <div class="content-card">
 
-            <div class="content-card">
+        <h3>Add Bank Transaction</h3>
 
-                <h3>Tax Estimation</h3>
+        <form id="bank-transaction-form">
 
-                <div class="form-grid">
+            <div class="form-grid">
 
-                    <div class="form-group">
-                        <label for="tax-income">Annual Income (₹)</label>
-                        <input
-                            type="number"
-                            id="tax-income"
-                            placeholder="Enter annual income"
-                            min="0"
-                        >
-                    </div>
-
-                    <div class="form-group">
-                        <label for="tax-expenses">Eligible Deductions (₹)</label>
-                        <input
-                            type="number"
-                            id="tax-expenses"
-                            placeholder="Enter eligible deductions"
-                            min="0"
-                        >
-                    </div>
-
+                <div class="form-group">
+                    <label for="bank-type">Transaction Type</label>
+                    <select id="bank-type" required>
+                        <option value="">Select Type</option>
+                        <option value="INCOME">Income</option>
+                        <option value="EXPENSE">Expense</option>
+                    </select>
                 </div>
 
-                <button id="tax-calculate" class="primary-btn">
-                    Calculate Taxable Income
-                </button>
+                <div class="form-group">
+                    <label for="bank-party">Party Name</label>
+                    <input
+                        type="text"
+                        id="bank-party"
+                        placeholder="e.g. ABC Company"
+                        required
+                    >
+                </div>
 
-                <p id="tax-message" class="result-message">
-                    Your estimated result will appear here.
-                </p>
+                <div class="form-group">
+                    <label for="bank-amount">Amount (₹)</label>
+                    <input
+                        type="number"
+                        id="bank-amount"
+                        min="1"
+                        step="0.01"
+                        placeholder="Enter amount"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="bank-date">Date</label>
+                    <input type="date" id="bank-date" required>
+                </div>
 
             </div>
 
-        </section>
+            <button type="submit" class="primary-btn">
+                + Add Transaction
+            </button>
+
+        </form>
+
+    </div>
+
+    <div class="content-card">
+
+        <h3>Bank Transaction History</h3>
+
+        <p id="bank-empty" class="empty-message">
+            No bank transactions added yet.
+        </p>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Party Name</th>
+                        <th>Type</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+
+                <tbody id="bank-list"></tbody>
+            </table>
+        </div>
+
+    </div>
+
+</section>
+       
+
+       <!-- TAX PLANNER PAGE -->
+<section class="page" id="page-tax" hidden>
+
+    <div class="section-heading">
+        <div>
+            <h2>Tax Planner</h2>
+            <p>Calculate your tax using saved financial records.</p>
+        </div>
+    </div>
+
+    <div class="content-card">
+
+        <h3>Tax Calculation</h3>
+
+        <p>
+            Your saved income and expenses will be used
+            to calculate your estimated tax.
+        </p>
+
+        <div class="form-group">
+            <label for="tax-year">Financial Year</label>
+            <select id="tax-year">
+                <option value="2026-27">2026-27</option>
+            </select>
+        </div>
+
+        <button id="tax-calculate" class="primary-btn">
+            Calculate Tax
+        </button>
+
+        <p id="tax-message" class="result-message">
+            Your tax calculation will appear here.
+        </p>
+
+    </div>
+
+</section>
 
 
         <!-- SAINTSHIELD PAGE -->
@@ -398,7 +502,9 @@
             <div class="content-card">
 
                 <h3>Detected Alerts</h3>
-
+                <button id="scan-duplicates" class="primary-btn">
+                 Scan Duplicate Expenses
+                  </button>
                 <div id="fraud-alerts">
                     <p>No duplicate entries detected.</p>
                 </div>

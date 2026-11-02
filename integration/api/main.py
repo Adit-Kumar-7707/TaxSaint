@@ -6,12 +6,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from database_manager.connection import engine
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+from database_manager.connection import get_db
 
 from database_manager.repositories.fraud_repository import (
     find_duplicate_expenses,
     save_duplicate_alerts,
     find_income_mismatches,
     save_income_mismatch_alerts,
+    find_expense_mismatches,
+    save_expense_mismatch_alerts,
 )
 
 import json
@@ -21,7 +28,18 @@ from pathlib import Path
 
 
 app = FastAPI(title="TaxSaint API")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175"
+],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def home():
@@ -348,6 +366,27 @@ def scan_income_mismatches(user_id: int):
             detail="Unable to save income mismatch alerts",
         ) from error
 
+# EXPENSE MISMATCH APIs
+
+@app.get("/fraud/expense-mismatches")
+def get_expense_mismatches(user_id: int):
+    mismatches = find_expense_mismatches(user_id)
+
+    return {
+        "expense_mismatches": mismatches
+    }
+
+
+@app.post("/fraud/expense-mismatches/scan")
+def scan_expense_mismatches(user_id: int):
+    saved_alerts = save_expense_mismatch_alerts(user_id)
+
+    return {
+        "message": "Expense mismatch scan completed",
+        "saved_alerts": saved_alerts,
+        "count": len(saved_alerts)
+    }
+
 
 @app.get("/fraud/alerts")
 def get_fraud_alerts(user_id: int):
@@ -392,6 +431,102 @@ def get_fraud_alerts(user_id: int):
 class FraudAlertStatusUpdate(BaseModel):
     status: str
 
+# DELETE INCOME
+@app.delete("/income/{income_id}")
+def delete_income(
+    income_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        result = db.execute(
+            text("""
+                DELETE FROM income
+                WHERE income_id = :income_id
+                AND user_id = :user_id
+            """),
+            {
+                "income_id": income_id,
+                "user_id": user_id
+            }
+        )
+
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Income record not found"
+            )
+
+        db.commit()
+
+        return {"message": "Income deleted successfully"}
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Income cannot be deleted because it is linked to other records."
+        ) from error
+
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to delete income"
+        ) from error
+
+
+# DELETE EXPENSE
+@app.delete("/expenses/{expense_id}")
+def delete_expense(
+    expense_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        result = db.execute(
+            text("""
+                DELETE FROM expenses
+                WHERE expense_id = :expense_id
+                AND user_id = :user_id
+            """),
+            {
+                "expense_id": expense_id,
+                "user_id": user_id
+            }
+        )
+
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Expense record not found"
+            )
+
+        db.commit()
+
+        return {"message": "Expense deleted successfully"}
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Expense cannot be deleted because it is linked to other records."
+        ) from error
+
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to delete expense"
+        ) from error
 
 @app.patch("/fraud/alerts/{alert_id}")
 def update_fraud_alert_status(
@@ -519,21 +654,25 @@ def calculate_user_tax(user_id: int, financial_year: str = "2026-27"):
                 },
             ).scalar_one()
 
-            # Financial year ke andar total expenses
-            expenses = connection.execute(
-                text("""
-                    SELECT COALESCE(SUM(amount), 0)
-                    FROM expenses
-                    WHERE user_id = :user_id
-                      AND expense_date >= :start_date
-                      AND expense_date < :end_date
-                """),
-                {
-                    "user_id": user_id,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                },
-            ).scalar_one()
+            # Financial year ke eligible expenses
+            if user["worker_type"] == "BUSINESS":
+                expenses = connection.execute(
+                    text("""
+                        SELECT COALESCE(SUM(amount), 0)
+                        FROM expenses
+                        WHERE user_id = :user_id
+                          AND LOWER(category) = 'business'
+                          AND expense_date >= :start_date
+                          AND expense_date < :end_date
+                    """),
+                    {
+                        "user_id": user_id,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                ).scalar_one()
+            else:
+                expenses = 0
 
         # C++ engine ke liye input taiyar karo
         input_lines = [
@@ -683,3 +822,4 @@ def get_tax_results(user_id: int):
             status_code=500,
             detail="Unable to fetch tax results",
         ) from error
+
