@@ -1,21 +1,476 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <!-- document metadata -->
-    <meta charset="UTF-8" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaxSaint | Personal Finance</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
 
-    <!-- responsive viewport -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<body>
 
-    <!-- application title -->
-    <title>TaxSaint</title>
-  </head>
+<div class="app">
 
-  <body>
-    <!-- react mount point -->
-    <div id="root"></div>
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
 
-    <!-- react entry -->
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+        <div class="logo">
+            <span class="logo-icon">T</span>
+            <span>TaxSaint</span>
+        </div>
+
+        <p class="menu-label">MENU</p>
+
+        <nav id="navigation">
+
+            <a href="#" data-page="overview" class="active">
+                <span>⌂</span> Overview
+            </a>
+
+            <a href="#" data-page="income">
+                <span>↗</span> Income
+            </a>
+
+            <a href="#" data-page="expenses">
+                <span>↘</span> Expenses
+            </a>
+
+            <a href="#" data-page="tax">
+                <span>₹</span> Tax Planner
+            </a>
+
+            <a href="#" data-page="shield">
+                <span>♢</span> SaintShield
+            </a>
+
+            <a href="#" data-page="reports">
+                <span>▤</span> Reports
+            </a>
+
+        </nav>
+
+        <div class="sidebar-bottom">
+            <p>TaxSaint</p>
+            <small>Smart Finance Management</small>
+        </div>
+
+    </aside>
+
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+
+        <header class="topbar">
+
+            <div>
+                <p class="top-label">PERSONAL FINANCE</p>
+                <h1 id="page-title">Good to see you.</h1>
+            </div>
+
+            <div class="profile">
+                <div class="profile-icon">U</div>
+                <span>My Account</span>
+            </div>
+
+        </header>
+
+
+        <!-- OVERVIEW PAGE -->
+        <section class="page" id="page-overview">
+
+            <div class="hero">
+                <div>
+                    <p class="hero-label">YOUR FINANCIAL OVERVIEW</p>
+                    <h2>Take control of your money.</h2>
+                    <p>Track income, manage expenses and plan your taxes.</p>
+                </div>
+
+                <div class="hero-symbol">₹</div>
+            </div>
+
+
+            <div class="section-heading">
+                <div>
+                    <h2>Financial Summary</h2>
+                    <p>Your overall financial position</p>
+                </div>
+            </div>
+
+
+            <div class="stats-grid">
+
+                <div class="stat-card">
+                    <p>Total Income</p>
+                    <h2 id="total-income">₹0</h2>
+                    <span class="stat-icon green">↗</span>
+                </div>
+
+                <div class="stat-card">
+                    <p>Total Expenses</p>
+                    <h2 id="total-expenses">₹0</h2>
+                    <span class="stat-icon red">↘</span>
+                </div>
+
+                <div class="stat-card">
+                    <p>Net Balance</p>
+                    <h2 id="net-balance">₹0</h2>
+                    <span class="stat-icon blue">₹</span>
+                </div>
+
+            </div>
+
+
+            <div class="section-heading">
+                <div>
+                    <h2>Cash Flow</h2>
+                    <p>Your income and expenses at a glance</p>
+                </div>
+            </div>
+
+
+            <div class="cash-grid">
+
+                <div class="cash-card">
+                    <span>Money In</span>
+                    <h2 id="cash-in">₹0</h2>
+                </div>
+
+                <div class="cash-card">
+                    <span>Money Out</span>
+                    <h2 id="cash-out">₹0</h2>
+                </div>
+
+                <div class="cash-card">
+                    <span>Available Balance</span>
+                    <h2 id="cash-balance">₹0</h2>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- INCOME PAGE -->
+        <section class="page" id="page-income" hidden>
+
+            <div class="section-heading">
+                <div>
+                    <h2>Manage Income</h2>
+                    <p>Add and track your income sources.</p>
+                </div>
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Add New Income</h3>
+
+                <form id="income-form">
+
+                    <div class="form-grid">
+
+                        <div class="form-group">
+                            <label for="income-source">Income Source</label>
+                            <input
+                                type="text"
+                                id="income-source"
+                                placeholder="e.g. Salary, Freelancing"
+                                required
+                            >
+                        </div>
+
+                        <div class="form-group">
+                            <label for="income-amount">Amount (₹)</label>
+                            <input
+                                type="number"
+                                id="income-amount"
+                                placeholder="Enter amount"
+                                min="1"
+                                step="0.01"
+                                required
+                            >
+                        </div>
+
+                        <div class="form-group">
+                            <label for="income-date">Date</label>
+                            <input type="date" id="income-date" required>
+                        </div>
+
+                    </div>
+
+                    <button type="submit" class="primary-btn">
+                        + Add Income
+                    </button>
+
+                </form>
+
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Income History</h3>
+
+                <p id="income-empty" class="empty-message">
+                    No income records added yet.
+                </p>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Amount</th>
+                                <th>Date</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="income-list"></tbody>
+                    </table>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- EXPENSES PAGE -->
+        <section class="page" id="page-expenses" hidden>
+
+            <div class="section-heading">
+                <div>
+                    <h2>Manage Expenses</h2>
+                    <p>Keep track of where your money goes.</p>
+                </div>
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Add New Expense</h3>
+
+                <form id="expense-form">
+
+                    <div class="form-grid">
+
+                        <div class="form-group">
+                            <label for="expense-category">Category</label>
+                            <input
+                                type="text"
+                                id="expense-category"
+                                placeholder="e.g. Food, Travel"
+                                required
+                            >
+                        </div>
+
+                        <div class="form-group">
+                            <label for="expense-amount">Amount (₹)</label>
+                            <input
+                                type="number"
+                                id="expense-amount"
+                                placeholder="Enter amount"
+                                min="1"
+                                step="0.01"
+                                required
+                            >
+                        </div>
+
+                        <div class="form-group">
+                            <label for="expense-date">Date</label>
+                            <input type="date" id="expense-date" required>
+                        </div>
+
+                    </div>
+
+                    <button type="submit" class="primary-btn">
+                        + Add Expense
+                    </button>
+
+                </form>
+
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Expense History</h3>
+
+                <p id="expense-empty" class="empty-message">
+                    No expense records added yet.
+                </p>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Amount</th>
+                                <th>Date</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="expense-list"></tbody>
+                    </table>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- TAX PLANNER PAGE -->
+        <section class="page" id="page-tax" hidden>
+
+            <div class="section-heading">
+                <div>
+                    <h2>Tax Planner</h2>
+                    <p>Estimate your taxable income.</p>
+                </div>
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Tax Estimation</h3>
+
+                <div class="form-grid">
+
+                    <div class="form-group">
+                        <label for="tax-income">Annual Income (₹)</label>
+                        <input
+                            type="number"
+                            id="tax-income"
+                            placeholder="Enter annual income"
+                            min="0"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="tax-expenses">Eligible Deductions (₹)</label>
+                        <input
+                            type="number"
+                            id="tax-expenses"
+                            placeholder="Enter eligible deductions"
+                            min="0"
+                        >
+                    </div>
+
+                </div>
+
+                <button id="tax-calculate" class="primary-btn">
+                    Calculate Taxable Income
+                </button>
+
+                <p id="tax-message" class="result-message">
+                    Your estimated result will appear here.
+                </p>
+
+            </div>
+
+        </section>
+
+
+        <!-- SAINTSHIELD PAGE -->
+        <section class="page" id="page-shield" hidden>
+
+            <div class="section-heading">
+                <div>
+                    <h2>SaintShield</h2>
+                    <p>Monitor possible duplicate financial entries.</p>
+                </div>
+            </div>
+
+
+            <div class="shield-banner">
+                <div class="shield-icon">♢</div>
+
+                <div>
+                    <h3>Financial Monitoring</h3>
+                    <p>
+                        Review possible duplicate entries in your records.
+                    </p>
+                </div>
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Detected Alerts</h3>
+
+                <div id="fraud-alerts">
+                    <p>No duplicate entries detected.</p>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- REPORTS PAGE -->
+        <section class="page" id="page-reports" hidden>
+
+            <div class="section-heading">
+                <div>
+                    <h2>Financial Reports</h2>
+                    <p>Your financial data summary.</p>
+                </div>
+
+                <button id="export-report" class="primary-btn">
+                    Export CSV
+                </button>
+            </div>
+
+
+            <div class="stats-grid">
+
+                <div class="stat-card">
+                    <p>Total Income</p>
+                    <h2 id="report-income">₹0</h2>
+                </div>
+
+                <div class="stat-card">
+                    <p>Total Expenses</p>
+                    <h2 id="report-expenses">₹0</h2>
+                </div>
+
+                <div class="stat-card">
+                    <p>Net Balance</p>
+                    <h2 id="report-balance">₹0</h2>
+                </div>
+
+            </div>
+
+
+            <div class="content-card">
+
+                <h3>Transaction Statistics</h3>
+
+                <div class="report-row">
+                    <span>Total Income Records</span>
+                    <strong id="report-income-count">0</strong>
+                </div>
+
+                <div class="report-row">
+                    <span>Total Expense Records</span>
+                    <strong id="report-expense-count">0</strong>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <footer class="footer">
+            <p>© 2026 TaxSaint. Smart Finance Management.</p>
+        </footer>
+
+    </main>
+
+</div>
+
+<script src="/js/app.js"></script>
+
+</body>
 </html>
