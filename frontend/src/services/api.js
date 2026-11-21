@@ -228,6 +228,7 @@ export {
   uploadStatement,
   calculateTax,
   getTaxResult,
+  // Anomaly operations
   getFraudAlerts,
   updateFraudAlertStatus,
   runFraudScan,
