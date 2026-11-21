@@ -1,5 +1,5 @@
 // TaxSaint Results & Analytics Page
-// Displays tax results, financial summaries, charts and fraud alerts.
+// Displays tax results, financial summaries, charts, fraud alerts, and allows official computation sheet PDF export.
 
 import React, { useCallback, useEffect, useState } from "react";
 
@@ -7,6 +7,7 @@ import TaxResult from "../components/TaxResult";
 import FinancialSummary from "../components/FinancialSummary";
 import FraudAlerts from "../components/FraudAlerts";
 import AnalyticsChart from "../components/AnalyticsChart";
+import TaxSummaryReport from "../components/TaxSummaryReport";
 
 import {
   getFinancialSummary,
@@ -16,20 +17,18 @@ import {
 } from "../services/api";
 
 function ResultsAnalytics({ user = null }) {
-  // Support both common user ID field names.
   const userId = user?.id ?? user?.user_id ?? null;
 
   const [taxResult, setTaxResult] = useState(null);
   const [financialSummary, setFinancialSummary] = useState(null);
   const [analyticsData, setAnalyticsData] = useState(null);
   const [fraudAlerts, setFraudAlerts] = useState([]);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load tax results, financial summaries and fraud alerts.
   const loadResultsAndAnalytics = useCallback(async () => {
-    // A missing user should not crash the page.
     if (userId === null || userId === undefined || userId === "") {
       setTaxResult(null);
       setFinancialSummary(null);
@@ -37,7 +36,7 @@ function ResultsAnalytics({ user = null }) {
       setFraudAlerts([]);
       setError(
         new Error(
-          "No user is selected. Create or select a user to view financial results."
+          "No user is selected. Create, sign in, or select a user to view financial results."
         )
       );
       setLoading(false);
@@ -58,7 +57,6 @@ function ResultsAnalytics({ user = null }) {
       setTaxResult(taxResponse);
       setFinancialSummary(summaryResponse);
 
-      // Accept common response names from the financial summary API.
       const income =
         summaryResponse?.income ??
         summaryResponse?.total_income ??
@@ -76,7 +74,6 @@ function ResultsAnalytics({ user = null }) {
         expenses: Number(expenses) || 0,
       });
 
-      // Support either a direct array or an object containing alerts.
       const receivedAlerts = Array.isArray(fraudResponse)
         ? fraudResponse
         : fraudResponse?.alerts ?? fraudResponse?.data ?? [];
@@ -86,7 +83,6 @@ function ResultsAnalytics({ user = null }) {
       );
     } catch (requestError) {
       console.error("Failed to load Results & Analytics:", requestError);
-
       setError(
         requestError instanceof Error
           ? requestError
@@ -97,7 +93,6 @@ function ResultsAnalytics({ user = null }) {
     }
   }, [userId]);
 
-  // Update the status of a potential financial irregularity.
   const handleFraudAlertStatusChange = useCallback(
     async (alertId, status) => {
       if (alertId === null || alertId === undefined || alertId === "") {
@@ -118,13 +113,10 @@ function ResultsAnalytics({ user = null }) {
 
       try {
         setError(null);
-
         await updateFraudAlertStatus(alertId, status);
-
         await loadResultsAndAnalytics();
       } catch (requestError) {
         console.error("Failed to update fraud alert:", requestError);
-
         setError(
           requestError instanceof Error
             ? requestError
@@ -135,7 +127,6 @@ function ResultsAnalytics({ user = null }) {
     [loadResultsAndAnalytics]
   );
 
-  // Reload data when the page opens or the user changes.
   useEffect(() => {
     loadResultsAndAnalytics();
   }, [loadResultsAndAnalytics]);
@@ -143,25 +134,49 @@ function ResultsAnalytics({ user = null }) {
   return (
     <main id="taxsaint-results-analytics">
       <header id="results-analytics-header">
-        <h1>Results &amp; Analytics</h1>
+        <div>
+          <h1>Results &amp; Analytics</h1>
+          <p>
+            Review your tax results, financial position and potential financial alerts.
+          </p>
+        </div>
 
-        <p>
-          Review your tax results, financial position and potential
-          financial alerts.
-        </p>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          {taxResult && (
+            <button
+              type="button"
+              onClick={() => setShowReportModal(true)}
+              style={{
+                backgroundColor: "#2563eb",
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "8px",
+                padding: "10px 18px",
+                fontWeight: "600",
+                fontSize: "14px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                boxShadow: "0 2px 4px rgba(37, 99, 235, 0.3)",
+              }}
+            >
+              <span>📄</span> Export / Print Tax PDF
+            </button>
+          )}
 
-        <button
-          type="button"
-          onClick={loadResultsAndAnalytics}
-          disabled={loading}
-        >
-          {loading ? "Refreshing..." : "Refresh Results"}
-        </button>
+          <button
+            type="button"
+            onClick={loadResultsAndAnalytics}
+            disabled={loading}
+          >
+            {loading ? "Refreshing..." : "Refresh Results"}
+          </button>
+        </div>
       </header>
 
-      {/* Display page-level errors without crashing the page. */}
       {error && (
-        <div role="alert" aria-live="polite">
+        <div role="alert" aria-live="polite" className="error-banner">
           <strong>Unable to load all results</strong>
           <p>{error.message}</p>
         </div>
@@ -199,6 +214,16 @@ function ResultsAnalytics({ user = null }) {
           onStatusChange={handleFraudAlertStatusChange}
         />
       </section>
+
+      {showReportModal && (
+        <TaxSummaryReport
+          user={user}
+          taxResult={taxResult}
+          summary={financialSummary}
+          alerts={fraudAlerts}
+          onClose={() => setShowReportModal(false)}
+        />
+      )}
     </main>
   );
 }

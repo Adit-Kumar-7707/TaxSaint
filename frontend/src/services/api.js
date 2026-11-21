@@ -1,192 +1,177 @@
 // TaxSaint API service
+// Connects React UI components to the FastAPI backend.
 
-
-// backend base URL
+// Backend base URL
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
+const AUTH_TOKEN_KEY = "taxsaint_auth_token";
 
-// build API endpoint
+// --- Token Management Helpers ---
+
+function getStoredToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // LocalStorage might be disabled in privacy modes
+  }
+}
+
+function clearStoredToken() {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+// Build standard request headers with optional Bearer token
+function getAuthHeaders(additionalHeaders = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...additionalHeaders,
+  };
+  const token = getStoredToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+// Build API endpoint URL
 function buildUrl(endpoint) {
-
-  // remove duplicate slashes
   const baseUrl = API_BASE_URL.replace(/\/$/, "");
   const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-
   return `${baseUrl}${path}`;
 }
 
-
-// handle API response
+// Handle API response
 async function handleResponse(response) {
-
-  // read response body
   const data = await response.json().catch(() => null);
 
-
-  // handle failed response
   if (!response.ok) {
-
+    if (response.status === 401) {
+      clearStoredToken();
+    }
     const message =
       data?.detail ||
       data?.message ||
       `Request failed with status ${response.status}.`;
-
     throw new Error(message);
   }
 
-
-  // return successful response
   return data;
 }
 
+// --- Base HTTP Methods ---
 
-// perform GET request
 async function getRequest(endpoint) {
-
-  // send GET request
   const response = await fetch(buildUrl(endpoint), {
     method: "GET",
-    headers: {
-      Accept: "application/json"
-    }
+    headers: getAuthHeaders(),
   });
-
-
-  // process response
   return handleResponse(response);
 }
 
-
-// perform POST request
 async function postRequest(endpoint, data) {
-
-  // send POST request
   const response = await fetch(buildUrl(endpoint), {
     method: "POST",
-    headers: {
+    headers: getAuthHeaders({
       "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify(data)
+    }),
+    body: JSON.stringify(data),
   });
-
-
-  // process response
   return handleResponse(response);
 }
 
-
-// perform PUT request
 async function putRequest(endpoint, data) {
-
-  // send PUT request
   const response = await fetch(buildUrl(endpoint), {
     method: "PUT",
-    headers: {
+    headers: getAuthHeaders({
       "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify(data)
+    }),
+    body: JSON.stringify(data),
   });
-
-
-  // process response
   return handleResponse(response);
 }
 
-
-// perform DELETE request
 async function deleteRequest(endpoint) {
-
-  // send DELETE request
   const response = await fetch(buildUrl(endpoint), {
     method: "DELETE",
-    headers: {
-      Accept: "application/json"
-    }
+    headers: getAuthHeaders(),
   });
-
-
-  // process response
   return handleResponse(response);
 }
 
+// --- Authentication & User Endpoints ---
 
-// user API
+async function loginUser(credentials) {
+  const data = await postRequest("/api/users/login", credentials);
+  if (data?.access_token) {
+    setStoredToken(data.access_token);
+  }
+  return data;
+}
+
+async function getCurrentUser() {
+  return getRequest("/api/users/me");
+}
+
+function logoutUser() {
+  clearStoredToken();
+}
+
 async function getUser(userId) {
-  // endpoint implementation comes later
   return getRequest(`/api/users/${userId}`);
 }
 
-
 async function createUser(userData) {
-  return postRequest("/api/users", userData);
+  const data = await postRequest("/api/users", userData);
+  if (data?.access_token) {
+    setStoredToken(data.access_token);
+  }
+  return data;
 }
 
-// update the current user's profile
 async function updateUser(userId, userData) {
-  const response = await fetch(buildUrl(`/api/users/${userId}`), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(userData)
-  });
-  return handleResponse(response);
+  return putRequest(`/api/users/${userId}`, userData);
 }
 
+// --- Financial Endpoints ---
 
-// income API
 async function createIncome(incomeData) {
-  // endpoint implementation comes later
   return postRequest("/api/financial/income", incomeData);
 }
 
-
-// expense API
 async function createExpense(expenseData) {
-  // endpoint implementation comes later
   return postRequest("/api/financial/expenses", expenseData);
 }
 
-
-// tax API
-async function calculateTax(taxData) {
-  // endpoint implementation comes later
-  return postRequest("/api/tax/calculate", taxData);
-}
-
-// financial summary API
 async function getFinancialSummary(userId) {
-  // request financial summary
   return getRequest(`/api/financial/summary/${userId}`);
 }
 
-// tax result API
-async function getTaxResult(userId) {
-  // request latest tax result
-  return getRequest(`/api/tax/result/${userId}`);
+async function getIncomeList(userId) {
+  return getRequest(`/api/financial/income/${userId}`);
 }
 
-// fraud alerts API
-async function getFraudAlerts(userId) {
-  // request fraud alerts
-  return getRequest(`/api/fraud/alerts/${userId}`);
+async function getExpenseList(userId) {
+  return getRequest(`/api/financial/expenses/${userId}`);
 }
 
-// update fraud alert status API
-async function updateFraudAlertStatus(alertId, status) {
-  // update fraud alert status
-  return putRequest(`/api/fraud/alerts/${alertId}/status`, {
-    status
-  });
-}
-
-// Scan saved transactions and persist newly detected potential anomalies.
-async function runFraudScan(userId) {
-  return postRequest(`/api/fraud/scan/${userId}`, {});
-}
-
-// upload CSV or Excel statement file
+// Upload CSV, Excel or PDF statement file
 async function uploadStatement(userId, file) {
   const formData = new FormData();
   formData.append("user_id", userId);
@@ -194,39 +179,56 @@ async function uploadStatement(userId, file) {
 
   const response = await fetch(buildUrl("/api/financial/upload"), {
     method: "POST",
-    headers: {
-      Accept: "application/json"
-    },
-    body: formData
+    headers: getAuthHeaders(),
+    body: formData,
   });
 
   return handleResponse(response);
 }
 
-// get list of recorded income
-async function getIncomeList(userId) {
-  return getRequest(`/api/financial/income/${userId}`);
+// --- Tax Endpoints ---
+
+async function calculateTax(taxData) {
+  return postRequest("/api/tax/calculate", taxData);
 }
 
-// get list of recorded expenses
-async function getExpenseList(userId) {
-  return getRequest(`/api/financial/expenses/${userId}`);
+async function getTaxResult(userId) {
+  return getRequest(`/api/tax/result/${userId}`);
 }
 
-// export API service
+// --- Fraud & Anomaly Endpoints ---
+
+async function getFraudAlerts(userId) {
+  return getRequest(`/api/fraud/alerts/${userId}`);
+}
+
+async function updateFraudAlertStatus(alertId, status) {
+  return putRequest(`/api/fraud/alerts/${alertId}/status`, { status });
+}
+
+async function runFraudScan(userId) {
+  return postRequest(`/api/fraud/scan/${userId}`, {});
+}
+
 export {
+  getStoredToken,
+  setStoredToken,
+  clearStoredToken,
+  loginUser,
+  getCurrentUser,
+  logoutUser,
   getUser,
   createUser,
   updateUser,
   createIncome,
   createExpense,
-  calculateTax,
   getFinancialSummary,
+  getIncomeList,
+  getExpenseList,
+  uploadStatement,
+  calculateTax,
   getTaxResult,
   getFraudAlerts,
   updateFraudAlertStatus,
   runFraudScan,
-  uploadStatement,
-  getIncomeList,
-  getExpenseList
 };

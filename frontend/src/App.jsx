@@ -1,10 +1,11 @@
 // TaxSaint main application.
-// Connects UI pages with FastAPI backend and computational engines.
+// Connects UI pages with FastAPI backend, computational engines, and authentication lifecycle.
 import React, { useState, useEffect, useCallback } from "react";
 
 // Components
 import Navbar from "./components/Navbar.jsx";
 import Sidebar from "./components/Sidebar.jsx";
+import AuthModal from "./components/AuthModal.jsx";
 
 // Pages
 import Dashboard from "./pages/Dashboard.jsx";
@@ -25,7 +26,10 @@ import {
   getTaxResult,
   getFraudAlerts,
   updateFraudAlertStatus,
-  runFraudScan
+  runFraudScan,
+  getCurrentUser,
+  logoutUser,
+  getStoredToken,
 } from "./services/api.js";
 
 const APP_PAGES = {
@@ -46,6 +50,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState("");
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   const handlePageChange = (page) => {
     setCurrentPage(page);
@@ -57,7 +62,6 @@ function App() {
     setSuccessMessage("");
   };
 
-  // Helper to execute asynchronous API actions with loading and error tracking
   const runAction = async (actionFn, successMsg = "") => {
     setLoading(true);
     setError(null);
@@ -74,26 +78,24 @@ function App() {
     }
   };
 
-  // Refresh financial summary, latest tax result, and fraud alerts for active user
   const refreshUserData = useCallback(async (userId) => {
     if (!userId) return;
     try {
       const [sumRes, taxRes, alertRes] = await Promise.all([
         getFinancialSummary(userId).catch(() => null),
         getTaxResult(userId).catch(() => null),
-        getFraudAlerts(userId).catch(() => ({ alerts: [] }))
+        getFraudAlerts(userId).catch(() => ({ alerts: [] })),
       ]);
 
       setSummary(sumRes);
       setTaxResult(taxRes);
-      const rawAlerts = Array.isArray(alertRes) ? alertRes : (alertRes?.alerts || []);
+      const rawAlerts = Array.isArray(alertRes) ? alertRes : alertRes?.alerts || [];
       setAlerts(rawAlerts);
     } catch (err) {
       console.warn("Could not load supplementary financial data:", err);
     }
   }, []);
 
-  // Quick Persona Selector for live evaluation
   const handleSelectDemoUser = async (userId) => {
     const loadedUser = await runAction(
       () => getUser(userId),
@@ -105,7 +107,26 @@ function App() {
     }
   };
 
-  // Save / Update profile in database
+  const handleAuthSuccess = async (authenticatedUser) => {
+    setUser(authenticatedUser);
+    setShowAuthModal(false);
+    setSuccessMessage(`Welcome, ${authenticatedUser.name || "User"}! You are signed in.`);
+    const uid = authenticatedUser.id ?? authenticatedUser.user_id;
+    if (uid) {
+      await refreshUserData(uid);
+    }
+  };
+
+  const handleLogout = () => {
+    logoutUser();
+    setUser(null);
+    setSummary(null);
+    setTaxResult(null);
+    setAlerts([]);
+    setSuccessMessage("You have been signed out.");
+    setCurrentPage(APP_PAGES.DASHBOARD);
+  };
+
   const handleSaveProfile = async (profileData) => {
     const userId = user?.id ?? user?.user_id;
     if (userId) {
@@ -126,12 +147,11 @@ function App() {
     }
   };
 
-  // Record income entry
   const handleIncomeSubmit = async (incomeData) => {
     const userId = user?.id ?? user?.user_id;
     if (!userId) {
-      setError("Please select or create a profile first from the Profile page.");
-      setCurrentPage(APP_PAGES.PROFILE);
+      setError("Please sign in or select a profile first.");
+      setShowAuthModal(true);
       return;
     }
     const result = await runAction(
@@ -141,12 +161,11 @@ function App() {
     if (result) await refreshUserData(userId);
   };
 
-  // Record expense entry
   const handleExpenseSubmit = async (expenseData) => {
     const userId = user?.id ?? user?.user_id;
     if (!userId) {
-      setError("Please select or create a profile first from the Profile page.");
-      setCurrentPage(APP_PAGES.PROFILE);
+      setError("Please sign in or select a profile first.");
+      setShowAuthModal(true);
       return;
     }
     const result = await runAction(
@@ -156,12 +175,11 @@ function App() {
     if (result) await refreshUserData(userId);
   };
 
-  // Run C++ tax engine calculation
   const handleCalculateTax = async (taxData) => {
     const userId = user?.id ?? user?.user_id;
     if (!userId) {
-      setError("Please select or create a profile first from the Profile page.");
-      setCurrentPage(APP_PAGES.PROFILE);
+      setError("Please sign in or select a profile first.");
+      setShowAuthModal(true);
       return;
     }
     const result = await runAction(
@@ -174,12 +192,11 @@ function App() {
     }
   };
 
-  // Run deterministic fraud anomaly scan
   const handleRunFraudCheck = async () => {
     const userId = user?.id ?? user?.user_id;
     if (!userId) {
-      setError("Please select or create a profile first from the Profile page.");
-      setCurrentPage(APP_PAGES.PROFILE);
+      setError("Please sign in or select a profile first.");
+      setShowAuthModal(true);
       return;
     }
     const result = await runAction(
@@ -189,7 +206,6 @@ function App() {
     if (result) await refreshUserData(userId);
   };
 
-  // Handle alert status update
   const handleAlertStatusChange = async (alertId, newStatus) => {
     const updated = await runAction(
       () => updateFraudAlertStatus(alertId, newStatus),
@@ -201,25 +217,38 @@ function App() {
     }
   };
 
-  // Callback when a statement is uploaded via CSV/Excel
   const handleUploadSuccess = async () => {
     setSuccessMessage("Statement processed and records imported into ledger!");
     const userId = user?.id ?? user?.user_id;
     if (userId) await refreshUserData(userId);
   };
 
-  // Auto-attempt to load user ID 1 on startup if available
   useEffect(() => {
-    getUser(1)
-      .then((u) => {
+    const token = getStoredToken();
+    if (token) {
+      getCurrentUser()
+        .then((currentUser) => {
+          if (currentUser) {
+            setUser(currentUser);
+            refreshUserData(currentUser.id ?? currentUser.user_id);
+          }
+        })
+        .catch(() => {
+          getUser(1).then((u) => {
+            if (u) {
+              setUser(u);
+              refreshUserData(1);
+            }
+          }).catch(() => {});
+        });
+    } else {
+      getUser(1).then((u) => {
         if (u) {
           setUser(u);
           refreshUserData(1);
         }
-      })
-      .catch(() => {
-        // Normal if database not seeded yet
-      });
+      }).catch(() => {});
+    }
   }, [refreshUserData]);
 
   const activeAlertsCount = alerts.filter(
@@ -236,7 +265,7 @@ function App() {
         const uid = user?.id ?? user?.user_id;
         if (uid) refreshUserData(uid);
       },
-      onDismissSuccess: handleDismissSuccess
+      onDismissSuccess: handleDismissSuccess,
     };
 
     switch (currentPage) {
@@ -252,12 +281,7 @@ function App() {
         );
 
       case APP_PAGES.PROFILE:
-        return (
-          <Profile
-            {...sharedProps}
-            onSave={handleSaveProfile}
-          />
-        );
+        return <Profile {...sharedProps} onSave={handleSaveProfile} />;
 
       case APP_PAGES.SALARIED:
         return (
@@ -286,9 +310,7 @@ function App() {
         );
 
       case APP_PAGES.RESULTS_ANALYTICS:
-        return (
-          <ResultsAnalytics user={user} />
-        );
+        return <ResultsAnalytics user={user} />;
 
       default:
         return (
@@ -310,6 +332,8 @@ function App() {
         user={user}
         onProfileClick={() => handlePageChange(APP_PAGES.PROFILE)}
         onSelectDemoUser={handleSelectDemoUser}
+        onOpenAuthModal={() => setShowAuthModal(true)}
+        onLogout={handleLogout}
       />
 
       <div className="taxsaint-layout-body">
@@ -319,10 +343,14 @@ function App() {
           alertCount={activeAlertsCount}
         />
 
-        <main id="taxsaint-content">
-          {renderPage()}
-        </main>
+        <main id="taxsaint-content">{renderPage()}</main>
       </div>
+
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onAuthSuccess={handleAuthSuccess}
+      />
     </div>
   );
 }
