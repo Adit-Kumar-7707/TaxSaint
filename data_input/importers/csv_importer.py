@@ -984,8 +984,11 @@ def process_file_stream(
         df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
     elif any(name_lower.endswith(ext) for ext in (".xlsx", ".xls", ".xlsm")):
         df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+    elif name_lower.endswith(".pdf"):
+        from data_input.importers.pdf_importer import parse_pdf_statement
+        df = parse_pdf_statement(file_bytes)
     else:
-        raise ImporterError(f"Unsupported file type: {filename}. Supported formats are .csv, .xlsx, .xls")
+        raise ImporterError(f"Unsupported file type: {filename}. Supported formats are .csv, .xlsx, .xls, .pdf")
 
     return process_dataframe(
         df,

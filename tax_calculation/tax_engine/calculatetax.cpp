@@ -1,13 +1,6 @@
-// TaxSaint : tax calculation engine (New Tax Regime)
-//
-// All tax rules come from the backend. Nothing is hardcoded.
-// FastAPI sends lines on stdin and reads JSON from stdout.
-//
-//   RULE|standard_deduction|75000
-//   RULE|rebate_limit|1200000
-//   RULE|cess_rate|4
-//   SLAB|lower|upper|rate          (empty upper = no limit)
-//   USER|user_id|worker_type|income|expenses
+// TaxSaint : Tax Calculation Engine & Dual-Regime Optimizer
+// Supports FY 2026-27 New Tax Regime, Old Tax Regime with Section 80C/80D Deductions,
+// and automated regime recommendation.
 //
 // Build: g++ -std=c++17 calculatetax.cpp -o calculatetax
 // Run:   ./calculatetax < input.txt
@@ -19,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 using namespace std;
 
 namespace tax_engine {
@@ -28,7 +22,6 @@ vector<string> validate_rules(const TaxRules& rules)
 {
     vector<string> errors;
 
-    // Every rule must be sent by the backend
     if (rules.standardDeduction < 0)
         errors.push_back("standard_deduction is missing or negative");
 
@@ -43,7 +36,6 @@ vector<string> validate_rules(const TaxRules& rules)
         return errors;
     }
 
-    // First slab must start at 0
     if (rules.slabs[0].lower != 0)
         errors.push_back("first slab must start at 0");
 
@@ -55,7 +47,6 @@ vector<string> validate_rules(const TaxRules& rules)
         if (s.rate < 0 || s.rate > 100)
             errors.push_back(name + "rate must be between 0 and 100");
 
-        // Only the last slab can be open-ended
         if (!isLast && s.upper == -1)
             errors.push_back(name + "only the last slab can have no upper limit");
 
@@ -65,7 +56,6 @@ vector<string> validate_rules(const TaxRules& rules)
         if (s.upper != -1 && s.upper <= s.lower)
             errors.push_back(name + "upper must be greater than lower");
 
-        // No gaps or overlaps between slabs
         if (i > 0 && s.lower != rules.slabs[i - 1].upper)
             errors.push_back(name + "lower must equal previous slab's upper");
     }
@@ -74,7 +64,7 @@ vector<string> validate_rules(const TaxRules& rules)
 }
 
 // Checks one user's input; empty list = valid
-vector<string> validate_input(double income, double expenses, const string& workerType)
+vector<string> validate_input(double income, double expenses, const string& workerType, double deductions)
 {
     vector<string> errors;
 
@@ -87,10 +77,13 @@ vector<string> validate_input(double income, double expenses, const string& work
     if (expenses < 0)
         errors.push_back("expenses cannot be negative");
 
+    if (deductions < 0)
+        errors.push_back("deductions cannot be negative");
+
     return errors;
 }
 
-// Slab tax after rebate, before cess
+// Slab tax after rebate, before cess under New Tax Regime
 double calculate_tax(double taxable_income, const TaxRules& rules)
 {
     double tax = 0;
@@ -98,57 +91,87 @@ double calculate_tax(double taxable_income, const TaxRules& rules)
     for (size_t i = 0; i < rules.slabs.size(); i++) {
         const Slab& s = rules.slabs[i];
 
-        // Stop when income is below slab
         if (taxable_income <= s.lower)
             break;
 
-        double top;
-
-        if (s.upper == -1 || taxable_income < s.upper)
-            top = taxable_income;
-        else
-            top = s.upper;
-
+        double top = (s.upper == -1 || taxable_income < s.upper) ? taxable_income : s.upper;
         tax += (top - s.lower) * s.rate / 100;
     }
 
-    // Apply rebate under section 87A
+    // Section 87A Rebate for New Regime (₹12 Lakh limit in FY 2026-27)
     if (taxable_income <= rules.rebateLimit)
         tax = 0;
 
     return tax;
 }
 
-// Calculates tax and returns complete result
-TaxResult calculate_tax_result(double income, double expenses,
+// Calculate tax under Old Tax Regime (includes 80C/80D deductions + ₹50k std deduction)
+double calculate_old_regime_tax(double income, double expenses, double deductions,
+                                const string& workerType, double cessRate)
+{
+    double taxable = income - expenses;
+
+    // Old Regime salaried standard deduction: ₹50,000
+    if (workerType == "SALARIED") {
+        taxable -= 50000.0;
+    }
+
+    // Apply Chapter VI-A deductions (80C, 80D, etc.)
+    taxable -= deductions;
+
+    if (taxable <= 0)
+        return 0.0;
+
+    // Traditional Old Regime Slabs:
+    // 0 - 2,50,000: 0%
+    // 2,50,000 - 5,00,000: 5%
+    // 5,00,000 - 10,00,000: 20%
+    // Above 10,00,000: 30%
+    double oldTax = 0.0;
+    if (taxable > 250000.0) {
+        double chunk = min(taxable, 500000.0) - 250000.0;
+        oldTax += chunk * 0.05;
+    }
+    if (taxable > 500000.0) {
+        double chunk = min(taxable, 1000000.0) - 500000.0;
+        oldTax += chunk * 0.20;
+    }
+    if (taxable > 1000000.0) {
+        double chunk = taxable - 1000000.0;
+        oldTax += chunk * 0.30;
+    }
+
+    // Section 87A rebate in Old Regime (Rebate up to ₹12,500 if income <= ₹5,00,000)
+    if (taxable <= 500000.0) {
+        oldTax = 0.0;
+    }
+
+    double cess = oldTax * (cessRate / 100.0);
+    return oldTax + cess;
+}
+
+// Full calculation comparing both regimes
+TaxResult calculate_tax_result(double income, double expenses, double deductions,
                                const string& workerType, const TaxRules& rules)
 {
     TaxResult result{};
 
-    // Store original income
     result.grossIncome = income;
-
-    // Store applicable expenses
     result.expenses = expenses;
+    result.deductions = deductions;
 
-    // Calculate income after expenses
-    double taxable = income - expenses;
+    // 1. Calculate New Tax Regime (Section 115BAC)
+    double taxableNew = income - expenses;
+    if (workerType == "SALARIED") {
+        taxableNew -= rules.standardDeduction;
+    }
+    if (taxableNew < 0) taxableNew = 0;
+    result.taxableIncome = taxableNew;
 
-    // Apply salaried standard deduction
-    if (workerType == "SALARIED")
-        taxable -= rules.standardDeduction;
+    result.taxBeforeCess = calculate_tax(taxableNew, rules);
 
-    // Prevent negative taxable income
-    if (taxable < 0)
-        taxable = 0;
-
-    result.taxableIncome = taxable;
-
-    // Slab-wise tax with rebate
-    result.taxBeforeCess = calculate_tax(taxable, rules);
-
-    // Compute slab breakdown for detailed reporting
-    bool getsRebate = (taxable <= rules.rebateLimit);
+    // Compute progressive slab breakdown
+    bool getsRebate = (taxableNew <= rules.rebateLimit);
     for (size_t i = 0; i < rules.slabs.size(); i++) {
         const Slab& s = rules.slabs[i];
         SlabDetail detail{};
@@ -158,21 +181,30 @@ TaxResult calculate_tax_result(double income, double expenses,
         detail.taxableInSlab = 0;
         detail.taxInSlab = 0;
 
-        if (taxable > s.lower) {
-            double top = (s.upper == -1 || taxable < s.upper) ? taxable : s.upper;
+        if (taxableNew > s.lower) {
+            double top = (s.upper == -1 || taxableNew < s.upper) ? taxableNew : s.upper;
             detail.taxableInSlab = top - s.lower;
             detail.taxInSlab = (getsRebate ? 0.0 : detail.taxableInSlab * s.rate / 100.0);
         }
         result.slabBreakdown.push_back(detail);
     }
 
-    // Calculate health and education cess
-    result.cess = result.taxBeforeCess * rules.cessRate / 100;
-
-    // Store final tax result
+    result.cess = result.taxBeforeCess * rules.cessRate / 100.0;
     result.totalTax = result.taxBeforeCess + result.cess;
 
-    return result; // result for backend
+    // 2. Calculate Old Tax Regime
+    result.oldRegimeTax = calculate_old_regime_tax(income, expenses, deductions, workerType, rules.cessRate);
+
+    // 3. Compare and Recommend
+    if (result.totalTax <= result.oldRegimeTax) {
+        result.recommendedRegime = "NEW";
+        result.taxSavings = result.oldRegimeTax - result.totalTax;
+    } else {
+        result.recommendedRegime = "OLD";
+        result.taxSavings = result.totalTax - result.oldRegimeTax;
+    }
+
+    return result;
 }
 
 }
@@ -181,32 +213,26 @@ TaxResult calculate_tax_result(double income, double expenses,
 // Backend connection: read stdin, write JSON to stdout
 // ============================================================
 
-// One USER line from the backend
 struct UserRow {
     string userId;
     string workerType;
     double income;
     double expenses;
+    double deductions;
 };
 
-// Remove spaces from both ends
 static string trim(const string& s)
 {
     size_t start = s.find_first_not_of(" \t\r\n");
     size_t end = s.find_last_not_of(" \t\r\n");
-
-    if (start == string::npos)
-        return "";
-
+    if (start == string::npos) return "";
     return s.substr(start, end - start + 1);
 }
 
-// Split a line on '|'
 static vector<string> split(const string& line)
 {
     vector<string> parts;
     string current;
-
     for (char c : line) {
         if (c == '|') {
             parts.push_back(trim(current));
@@ -215,51 +241,37 @@ static vector<string> split(const string& line)
             current += c;
         }
     }
-
     parts.push_back(trim(current));
     return parts;
 }
 
-// Text to number; false if not a valid number
 static bool to_number(const string& text, double& value)
 {
-    if (text.empty())
-        return false;
-
+    if (text.empty()) return false;
     char* end = nullptr;
     value = strtod(text.c_str(), &end);
-
     return *end == '\0' && isfinite(value);
 }
 
-// Number with 2 decimals for JSON
 static string json_money(double value)
 {
     char buf[64];
     double rounded = round(value * 100) / 100;
-
-    if (rounded == 0)
-        rounded = 0;   // avoid -0.00
-
+    if (rounded == 0) rounded = 0;
     snprintf(buf, sizeof(buf), "%.2f", rounded);
     return buf;
 }
 
-// Text in quotes for JSON
 static string json_text(const string& s)
 {
     string out = "\"";
-
     for (char c : s) {
-        if (c == '"' || c == '\\')
-            out += '\\';
+        if (c == '"' || c == '\\') out += '\\';
         out += c;
     }
-
     return out + "\"";
 }
 
-// Reads RULE / SLAB / USER lines; bad lines go to errors
 static void read_input(tax_engine::TaxRules& rules, vector<UserRow>& users, vector<string>& errors)
 {
     string raw;
@@ -268,17 +280,13 @@ static void read_input(tax_engine::TaxRules& rules, vector<UserRow>& users, vect
     while (getline(cin, raw)) {
         lineNo++;
         string line = trim(raw);
-
-        // Skip blank lines and comments
-        if (line.empty() || line[0] == '#')
-            continue;
+        if (line.empty() || line[0] == '#') continue;
 
         vector<string> f = split(line);
         string where = "line " + to_string(lineNo) + ": ";
 
         if (f[0] == "RULE" && f.size() == 3) {
             double value;
-
             if (!to_number(f[2], value))
                 errors.push_back(where + f[1] + " is not a number");
             else if (f[1] == "standard_deduction")
@@ -293,8 +301,6 @@ static void read_input(tax_engine::TaxRules& rules, vector<UserRow>& users, vect
         else if (f[0] == "SLAB" && f.size() == 4) {
             tax_engine::Slab s;
             bool ok = to_number(f[1], s.lower) && to_number(f[3], s.rate);
-
-            // Empty upper = no limit
             if (f[2].empty())
                 s.upper = -1;
             else
@@ -305,17 +311,25 @@ static void read_input(tax_engine::TaxRules& rules, vector<UserRow>& users, vect
             else
                 errors.push_back(where + "SLAB must be SLAB|lower|upper|rate");
         }
-        else if (f[0] == "USER" && f.size() == 5) {
+        else if (f[0] == "USER" && (f.size() == 5 || f.size() == 6)) {
             UserRow u;
             u.userId = f[1];
             u.workerType = f[2];
+            u.deductions = 0.0;
 
-            if (u.userId.empty())
+            if (u.userId.empty()) {
                 errors.push_back(where + "user_id is empty");
-            else if (!to_number(f[3], u.income) || !to_number(f[4], u.expenses))
+            } else if (!to_number(f[3], u.income) || !to_number(f[4], u.expenses)) {
                 errors.push_back(where + "income and expenses must be numbers");
-            else
+            } else {
+                if (f.size() == 6 && !f[5].empty()) {
+                    if (!to_number(f[5], u.deductions)) {
+                        errors.push_back(where + "deductions must be a number");
+                        continue;
+                    }
+                }
                 users.push_back(u);
+            }
         }
         else {
             errors.push_back(where + "invalid line (use RULE, SLAB or USER)");
@@ -323,7 +337,6 @@ static void read_input(tax_engine::TaxRules& rules, vector<UserRow>& users, vect
     }
 }
 
-// Prints the full JSON response
 static void print_response(const vector<UserRow>& users,
                            const vector<tax_engine::TaxResult>& results,
                            const vector<string>& errors)
@@ -338,10 +351,14 @@ static void print_response(const vector<UserRow>& users,
              << ", \"worker_type\": " << json_text(users[i].workerType)
              << ", \"gross_income\": " << json_money(r.grossIncome)
              << ", \"expenses\": " << json_money(r.expenses)
+             << ", \"deductions\": " << json_money(r.deductions)
              << ", \"taxable_income\": " << json_money(r.taxableIncome)
              << ", \"tax_before_cess\": " << json_money(r.taxBeforeCess)
              << ", \"cess\": " << json_money(r.cess)
              << ", \"total_tax\": " << json_money(r.totalTax)
+             << ", \"old_regime_tax\": " << json_money(r.oldRegimeTax)
+             << ", \"recommended_regime\": " << json_text(r.recommendedRegime)
+             << ", \"tax_savings\": " << json_money(r.taxSavings)
              << ", \"slab_breakdown\": [";
         for (size_t s = 0; s < r.slabBreakdown.size(); s++) {
             const tax_engine::SlabDetail& d = r.slabBreakdown[s];
@@ -356,51 +373,40 @@ static void print_response(const vector<UserRow>& users,
     }
 
     cout << "  ],\n  \"errors\": [";
-
     for (size_t i = 0; i < errors.size(); i++)
         cout << (i ? ", " : "") << json_text(errors[i]);
-
     cout << "]\n}\n";
 }
 
 int main()
 {
-    // -1 = not received from backend yet
     tax_engine::TaxRules rules{-1, -1, -1, {}};
-
     vector<UserRow> users;
     vector<UserRow> calculatedUsers;
     vector<tax_engine::TaxResult> results;
     vector<string> errors;
 
-    // 1. Read everything the backend sent
     read_input(rules, users, errors);
 
-    // 2. Without valid rules nothing can be calculated
     vector<string> ruleErrors = tax_engine::validate_rules(rules);
-
     if (!ruleErrors.empty()) {
         errors.insert(errors.end(), ruleErrors.begin(), ruleErrors.end());
         print_response(calculatedUsers, results, errors);
         return 2;
     }
 
-    // 3. Validate and calculate each user
     for (const UserRow& u : users) {
-        vector<string> userErrors = tax_engine::validate_input(u.income, u.expenses, u.workerType);
-
+        vector<string> userErrors = tax_engine::validate_input(u.income, u.expenses, u.workerType, u.deductions);
         if (!userErrors.empty()) {
             for (const string& e : userErrors)
                 errors.push_back("user " + u.userId + ": " + e);
-            continue;   // skip bad user, keep going
+            continue;
         }
 
         calculatedUsers.push_back(u);
-        results.push_back(tax_engine::calculate_tax_result(u.income, u.expenses, u.workerType, rules));
+        results.push_back(tax_engine::calculate_tax_result(u.income, u.expenses, u.deductions, u.workerType, rules));
     }
 
-    // 4. Send JSON back to the backend
     print_response(calculatedUsers, results, errors);
-
     return errors.empty() ? 0 : 2;
 }
