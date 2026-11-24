@@ -1,1019 +1,500 @@
 """
-csv_importer.py
+csv_importer.py - TaxSaint Deliverable 2: CSV/Excel transaction import.
 
-TaxSaint - Deliverable 2: CSV/Excel Transaction Import
-CSV importer for income, expense, and bank transaction records.
-
-This module also holds the SHARED import pipeline (type detection, validation,
-conversion, duplicate handling, API sending). excel_importer.py reuses these
-functions so the logic exists in exactly one place.
+Reads a file of income, expense or bank transaction records, checks every row,
+and sends the valid rows to the FastAPI backend (never straight to the
+database). excel_importer.py reuses everything here except the file reading.
 
 Pipeline:
-    CSV -> read -> clean -> detect type -> validate columns -> validate rows
-        -> separate valid/invalid -> convert to internal format
-        -> duplicate check -> send to FastAPI -> import summary
+    read -> clean -> detect type -> check columns -> check rows
+         -> split valid/invalid -> convert to API format
+         -> (optional) skip existing -> send to FastAPI -> summary
 
-Responsibility boundary:
-    - This module handles DATA IMPORT only.
-    - It does NOT calculate tax, detect fraud, or touch the dashboard.
-    - It does NOT connect to Supabase. Valid records go through FastAPI.
-
-Alignment with the rest of TaxSaint:
-    - Column names / lengths follow database_manager/schema/data.sql.
-    - Endpoints and payload field names follow frontend/src/services/api.js
-      and the frontend forms (the only existing API client). The whole
-      mapping lives in API_ENDPOINTS / API_FIELD_MAP below, so changing it
-      when the backend schema is finalized is a one-place edit.
-
-Usage (from the project root):
-    python -m data_input.importers.csv_importer income.csv --user-id 1
-    python -m data_input.importers.csv_importer income.csv --user-id 1 --dry-run
+Used in two ways:
+    1. Command line:   python -m data_input.importers.csv_importer FILE --user-id 1
+    2. Web upload:     process_file_stream() is called by POST /api/financial/upload
 """
 
-from __future__ import annotations
-
 import argparse
-import hashlib
-import json
+import io
 import os
-import re
 import sys
-import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
 
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Settings
 # ---------------------------------------------------------------------------
 
-class TransactionType(str, Enum):
-    """Kinds of records the importer supports."""
-    INCOME = "income"
-    EXPENSE = "expense"
-    BANK_TRANSACTION = "bank_transaction"
+API_URL_ENV = "TAXSAINT_API_BASE_URL"
+DEFAULT_API_URL = "http://localhost:8000"
+TIMEOUT_SECONDS = 10
+
+# Everything that differs between the three record types. Endpoints and field
+# names come from integration/api/routes/financial.py and schemas/requests.py.
+RECORD_TYPES = {
+    "income": {
+        "key_column": "source",                    # column that identifies this type
+        "required": ["source", "amount", "date"],
+        "optional": ["party_name"],                # backend uses 'source' if missing
+        "date_field": "income_date",               # name of the date field in the API
+        "endpoint": "/api/financial/income",
+        "list_endpoint": "/api/financial/income/{user_id}",
+        "match_fields": ["source", "amount", "income_date"],
+    },
+    "expense": {
+        "key_column": "category",
+        "required": ["category", "party_name", "amount", "date"],
+        "optional": [],
+        "date_field": "expense_date",
+        "endpoint": "/api/financial/expenses",
+        "list_endpoint": "/api/financial/expenses/{user_id}",
+        "match_fields": ["category", "party_name", "amount", "expense_date"],
+    },
+    "bank_transaction": {
+        "key_column": "transaction_type",
+        "required": ["transaction_type", "amount", "date"],
+        "optional": ["party_name"],
+        "date_field": "transaction_date",
+        "endpoint": "/api/financial/bank-transactions",
+        "list_endpoint": None,                     # the API has no list endpoint for these
+        "match_fields": None,
+    },
+}
+
+# Files may call the date column "date" or use the database names.
+COLUMN_ALIASES = {"income_date": "date", "expense_date": "date", "transaction_date": "date"}
+
+# Maximum text lengths, from database_manager/schema/data.sql.
+MAX_LENGTH = {"source": 50, "category": 50, "party_name": 100}
+
+BANK_DIRECTIONS = ("INCOME", "EXPENSE")
+DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S")  # last one = Excel dates
+
+# Values of ImportSummary.status
+SUCCESS, PARTIAL, FAILED = "success", "partial", "failed"
+REJECTED, NO_NEW_RECORDS, DRY_RUN = "rejected", "no_new_records", "dry_run"
 
 
 class ImporterError(Exception):
-    """A file-level problem that stops the import (unreadable file, unknown type...)."""
+    """A problem with the whole file or setup, so the import cannot continue."""
 
-
-# Required input columns per transaction type (after column-name normalization).
-# Based on the income / expenses / bank_transactions tables in data.sql.
-REQUIRED_COLUMNS: dict[TransactionType, list[str]] = {
-    TransactionType.INCOME: ["source", "amount", "date"],
-    TransactionType.EXPENSE: ["category", "party_name", "amount", "date"],
-    TransactionType.BANK_TRANSACTION: ["transaction_type", "amount", "date"],
-}
-
-# Columns that may be present but are not required.
-OPTIONAL_COLUMNS: dict[TransactionType, list[str]] = {
-    TransactionType.INCOME: ["description"],
-    TransactionType.EXPENSE: ["description"],
-    TransactionType.BANK_TRANSACTION: ["party_name", "description"],
-}
-
-# One column that is unique to each type; used to detect the type of a file.
-DETECTION_COLUMNS: dict[TransactionType, str] = {
-    TransactionType.INCOME: "source",
-    TransactionType.EXPENSE: "category",
-    TransactionType.BANK_TRANSACTION: "transaction_type",
-}
-
-# Accepted spellings of column names (applied after snake_case normalization,
-# so "incomeDate", "Income Date" and "income_date" all become "date").
-COLUMN_ALIASES: dict[str, str] = {
-    "income_date": "date",
-    "expense_date": "date",
-    "transaction_date": "date",
-    "party": "party_name",
-}
-
-# Text columns that are length-checked, with limits from data.sql (VARCHAR sizes).
-TEXT_COLUMNS: dict[TransactionType, dict[str, int]] = {
-    TransactionType.INCOME: {"source": 50},
-    TransactionType.EXPENSE: {"category": 50, "party_name": 100},
-    TransactionType.BANK_TRANSACTION: {"party_name": 100},
-}
-
-# Allowed values of the "transaction_type" column in bank transaction files
-# (the INCOME/EXPENSE direction, per data.sql). Not the same thing as the
-# TransactionType enum above, which is the kind of record being imported.
-VALID_BANK_DIRECTIONS: list[str] = ["INCOME", "EXPENSE"]
-
-# Accepted date formats. Day-first formats are used for slash/dot/dash dates
-# (dd/mm/yyyy); month-first dates are intentionally NOT accepted (ambiguous).
-DATE_FORMATS: list[str] = [
-    "%Y-%m-%d",
-    "%d-%m-%Y",
-    "%d/%m/%Y",
-    "%Y/%m/%d",
-    "%d.%m.%Y",
-    "%Y-%m-%d %H:%M:%S",  # what Excel date cells look like once read as text
-]
-
-# data.sql uses DECIMAL(12,2): at most 10 integer digits and 2 decimal places.
-MAX_AMOUNT = Decimal("9999999999.99")
-AMOUNT_PLACES = Decimal("0.01")
-
-# --- FastAPI integration (see frontend/src/services/api.js) ----------------
-
-# Same default as the frontend (VITE_API_BASE_URL). Override with this env var
-# or the api_base_url option.
-API_BASE_URL_ENV = "TAXSAINT_API_BASE_URL"
-DEFAULT_API_BASE_URL = "http://localhost:8000"
-
-# income / expenses match api.js. TODO: the bank transactions endpoint does not
-# exist yet - confirm the path with the backend owner.
-API_ENDPOINTS: dict[TransactionType, str] = {
-    TransactionType.INCOME: "/api/financial/income",
-    TransactionType.EXPENSE: "/api/financial/expenses",
-    TransactionType.BANK_TRANSACTION: "/api/financial/bank-transactions",
-}
-
-# internal (normalized) column -> API field name. Income and expense names match
-# the frontend forms (incomeDate, partyName, expenseDate...). Bank transaction
-# names follow the same camelCase convention. TODO: confirm all names against
-# the final FastAPI request schema (integration/api/schemas/requests.py).
-API_FIELD_MAP: dict[TransactionType, dict[str, str]] = {
-    TransactionType.INCOME: {
-        "source": "source",
-        "amount": "amount",
-        "date": "incomeDate",
-        "description": "description",
-    },
-    TransactionType.EXPENSE: {
-        "party_name": "partyName",
-        "category": "category",
-        "amount": "amount",
-        "date": "expenseDate",
-        "description": "description",
-    },
-    TransactionType.BANK_TRANSACTION: {
-        "party_name": "partyName",
-        "transaction_type": "transactionType",
-        "amount": "amount",
-        "date": "transactionDate",
-        "description": "description",
-    },
-}
-
-# Field that carries the owning user on every record (data.sql: user_id NOT NULL).
-API_USER_FIELD = "userId"
-
-REQUEST_TIMEOUT_SECONDS = 10.0
-CONNECT_RETRIES = 2          # retries only when the connection could not be made
-CONNECT_BACKOFF_SECONDS = 0.3
-
-# --- Duplicate-import ledger ------------------------------------------------
-
-# Records successfully sent are remembered here so that accidentally importing
-# the same file twice does not create the same records twice.
-LEDGER_PATH_ENV = "TAXSAINT_IMPORT_LEDGER"
-DEFAULT_LEDGER_PATH = Path.home() / ".taxsaint" / "import_ledger.json"
-
-# --- Import status values ---------------------------------------------------
-
-STATUS_SUCCESS = "success"                # everything valid was sent, nothing rejected
-STATUS_PARTIAL = "partial"                # some records sent, some rejected/failed
-STATUS_FAILED = "failed"                  # nothing was sent
-STATUS_REJECTED = "rejected"              # file rejected before sending (columns/strict mode)
-STATUS_NO_NEW_RECORDS = "no_new_records"  # every valid record was already imported
-STATUS_DRY_RUN = "dry_run"                # validated only, nothing sent
-
-
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ValidationError:
-    """
-    Describes one validation problem found in an input row.
-
-    row_index is the row number as seen in the spreadsheet / CSV, where the
-    header is row 1 (so the first data row is row 2). It is 0 for problems
-    that concern the whole file (e.g. a missing column).
-    """
-    row_index: int
-    column: Optional[str]
+    """One problem found in the file. row is the row number (header = row 1)."""
+    row: int
+    column: str
     message: str
-
-
-@dataclass
-class SendFailure:
-    """One record the API did not accept, with the reason."""
-    record: dict[str, Any]
-    message: str
-
-
-@dataclass
-class SendResult:
-    """Outcome of send_to_api()."""
-    sent: list[dict[str, Any]] = field(default_factory=list)
-    failed: list[SendFailure] = field(default_factory=list)
-    not_attempted: list[dict[str, Any]] = field(default_factory=list)
-    aborted_reason: Optional[str] = None
 
 
 @dataclass
 class ImportSummary:
-    """Result of a full import run."""
-    file_path: str
-    transaction_type: Optional[TransactionType] = None
-    user_id: Optional[int] = None
-    status: str = STATUS_FAILED
+    """What happened during one import (the upload route reads these fields)."""
+    file: str
+    transaction_type: str = ""
+    status: str = FAILED
     dry_run: bool = False
     total_rows: int = 0
     valid_count: int = 0
     invalid_count: int = 0
     duplicate_count: int = 0
     sent_count: int = 0
-    failed_count: int = 0
     errors: list[ValidationError] = field(default_factory=list)
     send_errors: list[str] = field(default_factory=list)
-    rejected_file: Optional[str] = None
     message: str = ""
 
 
 # ---------------------------------------------------------------------------
-# 1. Reading (CSV-specific)
+# 1. Reading and cleaning
 # ---------------------------------------------------------------------------
 
-def read_csv_file(file_path: str | Path) -> pd.DataFrame:
-    """
-    Read a CSV file into a DataFrame of strings.
-
-    Everything is read as text (no type guessing) so that validation sees
-    exactly what was in the file. Blank lines are kept as empty rows so row
-    numbers stay accurate; clean_dataframe() drops them later.
-
-    Raises ImporterError if the file is missing, not a .csv, empty, or malformed.
-    """
-    path = Path(file_path)
-    if not path.is_file():
-        raise ImporterError(f"File not found: {path}")
-    if path.suffix.lower() != ".csv":
-        raise ImporterError(f"Not a .csv file: {path.name}")
-
-    df: Optional[pd.DataFrame] = None
-    # utf-8-sig handles Excel's "CSV UTF-8" BOM; latin-1 never fails to decode.
-    for encoding in ("utf-8-sig", "latin-1"):
-        try:
-            df = pd.read_csv(
-                path,
-                dtype=str,
-                keep_default_na=False,
-                na_values=[""],
-                skip_blank_lines=False,
-                encoding=encoding,
-            )
-            break
-        except UnicodeDecodeError:
-            continue
-        except pd.errors.EmptyDataError:
-            raise ImporterError(f"The file is empty: {path.name}") from None
-        except pd.errors.ParserError as exc:
-            raise ImporterError(f"Could not parse {path.name}: {exc}") from None
-
-    if df is None:
-        raise ImporterError(f"Could not decode {path.name}; save it as UTF-8.")
-    if df.empty:
-        raise ImporterError(f"The file has a header but no data rows: {path.name}")
-    return df
+def check_file_exists(source) -> None:
+    """If source is a path (not an in-memory file), make sure the file exists."""
+    if isinstance(source, (str, Path)) and not Path(source).is_file():
+        raise ImporterError(f"File not found: {source}")
 
 
-# ---------------------------------------------------------------------------
-# 2. Cleaning + transaction type detection (shared)
-# ---------------------------------------------------------------------------
-
-def normalize_column_name(name: str) -> str:
-    """
-    Normalize a header to snake_case and apply COLUMN_ALIASES.
-
-    "Party Name", "partyName" and "party_name" -> "party_name";
-    "Income Date" / "incomeDate" -> "date".
-    """
-    text = str(name).strip()
-    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)   # camelCase -> camel_Case
-    text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
-    return COLUMN_ALIASES.get(text, text)
+def read_csv_file(source) -> pd.DataFrame:
+    """Read a CSV (a path or an in-memory file) as text, so nothing is guessed."""
+    check_file_exists(source)
+    try:
+        return pd.read_csv(
+            source, dtype=str, keep_default_na=False, na_values=[""],
+            skip_blank_lines=False,   # keeps row numbers correct
+            encoding="utf-8-sig",     # also handles Excel's "CSV UTF-8" files
+        )
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as error:
+        raise ImporterError(f"Could not read the CSV file: {error}") from None
 
 
-def _clean_cell(value: Any) -> Optional[str]:
-    """Strip text; turn NaN / empty / whitespace-only cells into None."""
-    if value is None:
+def _clean_cell(value):
+    """Strip spaces; empty cells become missing (None / NaN)."""
+    if pd.isna(value):
         return None
-    if not isinstance(value, str) and pd.isna(value):
-        return None
-    text = str(value).strip()
-    return text or None
+    return str(value).strip() or None
 
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Prepare a freshly read DataFrame for validation.
+    """Tidy headers ("Party Name" -> "party_name"), strip cells, drop empty rows."""
+    df = df.copy()
+    names = [str(name).strip().lower().replace(" ", "_") for name in df.columns]
+    df.columns = [COLUMN_ALIASES.get(name, name) for name in names]
+    if df.columns.duplicated().any():
+        raise ImporterError("The file has duplicate column names: "
+                            + ", ".join(sorted(set(df.columns[df.columns.duplicated()]))))
+    df = df.astype(object).apply(lambda column: column.map(_clean_cell))
+    return df.dropna(how="all")   # the original row numbers are kept
 
-    - normalizes column names (and rejects duplicates after normalization)
-    - drops empty "Unnamed" columns (trailing commas / stray cells)
-    - strips whitespace and turns blank cells into None
-    - drops fully empty rows, KEEPING the original index so that row numbers
-      in error messages still match the file
 
-    Raises ImporterError if the result has no data rows.
-    """
-    cleaned = df.copy()
-    columns = [normalize_column_name(c) for c in cleaned.columns]
-    duplicates = sorted({c for c in columns if columns.count(c) > 1})
-    if duplicates:
+# ---------------------------------------------------------------------------
+# 2. Detecting the record type
+# ---------------------------------------------------------------------------
+
+def detect_transaction_type(df: pd.DataFrame) -> str:
+    """Return 'income', 'expense' or 'bank_transaction' from the columns present."""
+    matches = [name for name, info in RECORD_TYPES.items() if info["key_column"] in df.columns]
+    if len(matches) != 1:
         raise ImporterError(
-            "Duplicate column names (after normalization): " + ", ".join(duplicates)
+            f"Could not tell the record type from the columns {list(df.columns)}. "
+            "Expected exactly one of: source (income), category (expense), "
+            "transaction_type (bank_transaction)."
         )
-    cleaned.columns = columns
-
-    stray = [c for c in cleaned.columns if c.startswith("unnamed") and cleaned[c].isna().all()]
-    cleaned = cleaned.drop(columns=stray)
-
-    cleaned = cleaned.astype(object).apply(lambda col: col.map(_clean_cell))
-    cleaned = cleaned.dropna(how="all")
-    if cleaned.empty:
-        raise ImporterError("The file contains no data rows.")
-    return cleaned
-
-
-def detect_transaction_type(df: pd.DataFrame) -> TransactionType:
-    """
-    Decide whether the data is income, expense, or bank transactions.
-
-    Looks for the column unique to each type: "source" -> income,
-    "category" -> expense, "transaction_type" -> bank transaction.
-    Expects normalized column names (see clean_dataframe()).
-
-    Raises ImporterError if no type, or more than one type, matches.
-    """
-    matches = [t for t, column in DETECTION_COLUMNS.items() if column in df.columns]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
-        raise ImporterError(
-            "Could not detect the transaction type. Expected one of the columns: "
-            + ", ".join(f"'{c}' ({t.value})" for t, c in DETECTION_COLUMNS.items())
-            + ". You can also specify the type explicitly."
-        )
-    raise ImporterError(
-        "The file matches more than one transaction type ("
-        + ", ".join(t.value for t in matches)
-        + "). Specify the type explicitly."
-    )
+    return matches[0]
 
 
 # ---------------------------------------------------------------------------
-# 3. Column validation (shared)
+# 3. Column validation
 # ---------------------------------------------------------------------------
 
-def validate_columns(
-    df: pd.DataFrame,
-    transaction_type: TransactionType,
-) -> list[str]:
-    """Return the required columns that are missing (empty list = OK)."""
-    return [c for c in REQUIRED_COLUMNS[transaction_type] if c not in df.columns]
+def validate_columns(df: pd.DataFrame, record_type: str) -> list[str]:
+    """Return the required columns that are missing (empty list = all present)."""
+    return [column for column in RECORD_TYPES[record_type]["required"] if column not in df.columns]
 
 
 # ---------------------------------------------------------------------------
-# 4. Row validation (shared)
+# 4. Row validation
 # ---------------------------------------------------------------------------
 
-def parse_amount(raw: Any) -> Decimal:
-    """
-    Parse an amount like "1500", "1,234.50" or "₹ 2,000" into a Decimal.
-
-    Raises ValueError (with a user-readable message) if it is not a positive,
-    finite number with at most 2 decimal places that fits DECIMAL(12,2).
-    """
-    text = str(raw).strip()
-    text = re.sub(r"^(?:₹|rs\.?|inr|\$)\s*", "", text, flags=re.IGNORECASE)
-    text = text.replace(",", "").replace(" ", "")
+def parse_amount(text: str) -> Decimal:
+    """Turn '1,234.50' into Decimal('1234.50'). Raises ValueError if not acceptable."""
     try:
-        value = Decimal(text)
+        amount = Decimal(text.replace(",", ""))
     except InvalidOperation:
-        raise ValueError(f"Amount '{raw}' is not a valid number") from None
-    if not value.is_finite():
-        raise ValueError(f"Amount '{raw}' is not a valid number")
-    if value <= 0:
-        raise ValueError("Amount must be greater than zero")
-    if value > MAX_AMOUNT:
-        raise ValueError(f"Amount is too large (maximum {MAX_AMOUNT})")
-    if value != value.quantize(AMOUNT_PLACES):
-        raise ValueError("Amount has more than 2 decimal places")
-    return value.quantize(AMOUNT_PLACES)
+        raise ValueError("amount is not a number") from None
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("amount must be greater than 0")
+    if amount >= 10**10:                                  # database column is DECIMAL(12,2)
+        raise ValueError("amount is too large")
+    if amount != amount.quantize(Decimal("0.01")):
+        raise ValueError("amount has more than 2 decimal places")
+    return amount.quantize(Decimal("0.01"))
 
 
-def parse_date(raw: Any) -> date:
-    """
-    Parse a date using DATE_FORMATS.
-
-    Raises ValueError if the format is not supported or the date is in the future.
-    """
-    text = str(raw).strip()
-    parsed: Optional[date] = None
-    for fmt in DATE_FORMATS:
+def parse_date(text: str) -> date:
+    """Turn '2026-04-30' or '30/04/2026' into a date. Raises ValueError if not acceptable."""
+    for date_format in DATE_FORMATS:
         try:
-            parsed = datetime.strptime(text, fmt).date()
+            parsed = datetime.strptime(text, date_format).date()
             break
         except ValueError:
             continue
-    if parsed is None:
-        raise ValueError(
-            f"Date '{raw}' is not in a supported format (use YYYY-MM-DD or DD/MM/YYYY)"
-        )
-    if parsed > date.today():
-        raise ValueError(f"Date '{raw}' is in the future")
+    else:
+        raise ValueError("date must look like 2026-04-30 or 30/04/2026")
     return parsed
 
 
-def _get(row: pd.Series, column: str) -> Optional[str]:
-    """Return a cell as stripped text, or None if the column/cell is missing."""
-    if column not in row.index:
-        return None
-    return _clean_cell(row[column])
+def _problem(check, value):
+    """Run a parse function; return its error message, or None if the value is fine."""
+    try:
+        check(value)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
-def _row_number(index: Any) -> int:
-    """Convert a DataFrame index to the row number shown in the file (header = row 1)."""
-    return int(index) + 2
-
-
-def validate_row(
-    row: pd.Series,
-    row_index: int,
-    transaction_type: TransactionType,
-) -> list[ValidationError]:
-    """
-    Validate a single row (row_index is the file row number, header = row 1).
-
-    Checks: missing required values, amount, date, text length limits, and
-    (for bank transactions) the INCOME/EXPENSE direction.
-    Returns the list of problems (empty list = row is valid).
-    """
-    errors: list[ValidationError] = []
-
-    def add(column: Optional[str], message: str) -> None:
-        errors.append(ValidationError(row_index, column, message))
-
-    for column in REQUIRED_COLUMNS[transaction_type]:
-        if _get(row, column) is None:
-            add(column, "Missing value")
-
-    for column, limit in TEXT_COLUMNS[transaction_type].items():
-        value = _get(row, column)
-        if value is not None and len(value) > limit:
-            add(column, f"Too long ({len(value)} characters, maximum {limit})")
-
-    amount = _get(row, "amount")
-    if amount is not None:
-        try:
-            parse_amount(amount)
-        except ValueError as exc:
-            add("amount", str(exc))
-
-    raw_date = _get(row, "date")
-    if raw_date is not None:
-        try:
-            parse_date(raw_date)
-        except ValueError as exc:
-            add("date", str(exc))
-
-    if transaction_type is TransactionType.BANK_TRANSACTION:
-        direction = _get(row, "transaction_type")
-        if direction is not None and direction.upper() not in VALID_BANK_DIRECTIONS:
-            add(
-                "transaction_type",
-                f"Invalid value '{direction}' (must be one of: "
-                + ", ".join(VALID_BANK_DIRECTIONS) + ")",
-            )
-
+def validate_row(row: pd.Series, row_number: int, record_type: str) -> list[ValidationError]:
+    """Check one row. Returns its problems (empty list = the row is valid)."""
+    info = RECORD_TYPES[record_type]
+    errors = []
+    for column in info["required"] + info["optional"]:
+        value = row.get(column)
+        if pd.isna(value):
+            if column in info["required"]:
+                errors.append(ValidationError(row_number, column, "missing value"))
+            continue
+        problem = None
+        if column == "amount":
+            problem = _problem(parse_amount, value)
+        elif column == "date":
+            problem = _problem(parse_date, value)
+        elif column == "transaction_type" and value.upper() not in BANK_DIRECTIONS:
+            problem = "must be INCOME or EXPENSE"
+        elif column in MAX_LENGTH and len(value) > MAX_LENGTH[column]:
+            problem = f"too long (maximum {MAX_LENGTH[column]} characters)"
+        if problem:
+            errors.append(ValidationError(row_number, column, problem))
     return errors
 
 
 # ---------------------------------------------------------------------------
-# 5. Separating valid and invalid rows (shared)
+# 5. Separating valid and invalid rows
 # ---------------------------------------------------------------------------
 
-def split_valid_invalid(
-    df: pd.DataFrame,
-    transaction_type: TransactionType,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[ValidationError]]:
-    """
-    Validate every row and split the results.
-
-    Returns (valid_rows_df, invalid_rows_df, all_validation_errors).
-    The invalid DataFrame has an extra "validation_errors" column describing
-    what is wrong with each row.
-    """
-    all_errors: list[ValidationError] = []
-    valid_index: list[Any] = []
-    invalid_index: list[Any] = []
-    invalid_messages: list[str] = []
-
+def split_valid_invalid(df: pd.DataFrame, record_type: str):
+    """Return (valid_rows, invalid_rows, errors)."""
+    errors = []
+    valid_index, invalid_index = [], []
     for index, row in df.iterrows():
-        row_errors = validate_row(row, _row_number(index), transaction_type)
-        if row_errors:
-            all_errors.extend(row_errors)
-            invalid_index.append(index)
-            invalid_messages.append("; ".join(f"{e.column}: {e.message}" for e in row_errors))
-        else:
-            valid_index.append(index)
-
-    valid_df = df.loc[valid_index].copy()
-    invalid_df = df.loc[invalid_index].copy()
-    invalid_df["validation_errors"] = invalid_messages
-    return valid_df, invalid_df, all_errors
-
-
-def export_rejected_rows(invalid_df: pd.DataFrame, output_path: str | Path) -> Path:
-    """
-    Write rejected rows to a CSV so they can be fixed and re-imported.
-
-    Adds a "source_row" column with the row number in the original file.
-    """
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    output = invalid_df.copy()
-    output.insert(0, "source_row", [_row_number(i) for i in output.index])
-    output.to_csv(path, index=False, encoding="utf-8")
-    return path
+        row_errors = validate_row(row, int(index) + 2, record_type)   # +2: header is row 1
+        errors.extend(row_errors)
+        (invalid_index if row_errors else valid_index).append(index)
+    return df.loc[valid_index], df.loc[invalid_index], errors
 
 
 # ---------------------------------------------------------------------------
-# 6. Conversion to TaxSaint internal format (shared)
+# 6. Converting to the API format
 # ---------------------------------------------------------------------------
 
-def convert_to_internal_format(
-    valid_df: pd.DataFrame,
-    transaction_type: TransactionType,
-    user_id: int,
-) -> list[dict[str, Any]]:
+def convert_to_internal_format(valid_df: pd.DataFrame, record_type: str, user_id: int) -> list[dict]:
     """
-    Convert validated rows into the JSON payloads the FastAPI backend expects.
-
-    Field names come from API_FIELD_MAP (TODO: confirm against the final
-    backend schema). Amounts are numbers rounded to 2 decimals, dates are
-    ISO "YYYY-MM-DD", and every record carries the owning user's id.
-    Optional columns that are empty are left out of the payload.
+    Turn valid rows into the JSON the backend expects. Example (income):
+    {"user_id": 1, "source": "Salary", "amount": "85000.00", "income_date": "2026-04-30"}
+    Amounts are sent as text so no precision is lost.
     """
-    mapping = API_FIELD_MAP[transaction_type]
-    records: list[dict[str, Any]] = []
-
+    info = RECORD_TYPES[record_type]
+    records = []
     for _, row in valid_df.iterrows():
-        record: dict[str, Any] = {API_USER_FIELD: user_id}
-        for column, api_field in mapping.items():
-            value = _get(row, column)
-            if value is None:
-                continue
+        record = {"user_id": user_id}
+        for column in info["required"] + info["optional"]:
+            value = row.get(column)
+            if pd.isna(value):
+                continue                      # empty optional column: leave it out
             if column == "amount":
-                record[api_field] = float(parse_amount(value))
+                record["amount"] = str(parse_amount(value))
             elif column == "date":
-                record[api_field] = parse_date(value).isoformat()
+                record[info["date_field"]] = parse_date(value).isoformat()
             elif column == "transaction_type":
-                record[api_field] = value.upper()
+                record[column] = value.upper()
             else:
-                record[api_field] = value
+                record[column] = value
         records.append(record)
     return records
 
 
 # ---------------------------------------------------------------------------
-# 7. Sending to FastAPI (shared)
+# 7. Skipping records that already exist (optional)
 # ---------------------------------------------------------------------------
 
-def _resolve_base_url(api_base_url: Optional[str]) -> str:
-    return (api_base_url or os.environ.get(API_BASE_URL_ENV) or DEFAULT_API_BASE_URL).rstrip("/")
-
-
-def _describe_http_error(response: requests.Response) -> str:
-    """Build a short, readable message from a non-2xx FastAPI response."""
-    detail: Any
-    try:
-        payload = response.json()
-        detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
-    except ValueError:
-        detail = response.text
-    return f"HTTP {response.status_code}: {str(detail)[:300]}"
-
-
-def send_to_api(
-    records: list[dict[str, Any]],
-    transaction_type: TransactionType,
-    api_base_url: Optional[str] = None,
-    timeout: float = REQUEST_TIMEOUT_SECONDS,
-) -> SendResult:
-    """
-    POST records to the FastAPI backend, one request per record.
-
-    The frontend's API client posts single records to /api/financial/income
-    and /api/financial/expenses, so the importer uses the same endpoints.
-    TODO: if the backend adds a bulk endpoint, switch to it here.
-
-    - Records the API accepts (2xx) go in SendResult.sent.
-    - Records it rejects (e.g. 422) go in SendResult.failed with the reason;
-      the remaining records are still attempted.
-    - If the API cannot be reached (or a request times out) sending stops:
-      the remaining records are returned in not_attempted and aborted_reason
-      is set. Retries happen only when a connection could not be made at all,
-      so a record is never POSTed twice.
-
-    Never talks to Supabase; no credentials are involved.
-    """
-    url = _resolve_base_url(api_base_url) + API_ENDPOINTS[transaction_type]
-    result = SendResult()
-
-    retry = Retry(
-        total=None, connect=CONNECT_RETRIES, read=0, status=0, other=0, redirect=0,
-        backoff_factor=CONNECT_BACKOFF_SECONDS,
+def _match_key(record: dict, fields: list[str]) -> tuple:
+    """Comparable form of a record ('85000.0' from the database equals '85000.00')."""
+    return tuple(
+        str(Decimal(str(record[f])).quantize(Decimal("0.01"))) if f == "amount" else str(record.get(f))
+        for f in fields
     )
-    session = requests.Session()
-    session.mount("http://", HTTPAdapter(max_retries=retry))
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-
-    try:
-        for position, record in enumerate(records):
-            try:
-                response = session.post(url, json=record, timeout=timeout)
-            except (requests.ConnectionError, requests.Timeout) as exc:
-                result.failed.append(
-                    SendFailure(record, f"Connection problem: {exc.__class__.__name__}")
-                )
-                result.not_attempted = list(records[position + 1:])
-                result.aborted_reason = f"Could not reach the API at {url} ({exc.__class__.__name__})"
-                break
-            except requests.RequestException as exc:
-                result.failed.append(SendFailure(record, f"Request error: {exc}"))
-                continue
-
-            if 200 <= response.status_code < 300:
-                result.sent.append(record)
-            else:
-                result.failed.append(SendFailure(record, _describe_http_error(response)))
-    finally:
-        session.close()
-
-    return result
 
 
-# ---------------------------------------------------------------------------
-# 8. Duplicate handling (shared)
-# ---------------------------------------------------------------------------
-
-def _fingerprint(record: dict[str, Any], transaction_type: TransactionType) -> str:
-    """Stable hash of a record's identifying fields (the description is ignored)."""
-    fields = [
-        record.get(api_field)
-        for api_field in API_FIELD_MAP[transaction_type].values()
-        if api_field != "description"
-    ]
-    payload = json.dumps(
-        [transaction_type.value, record.get(API_USER_FIELD), fields], sort_keys=True
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _ledger_path(ledger_path: Optional[str | Path]) -> Path:
-    if ledger_path:
-        return Path(ledger_path)
-    env_value = os.environ.get(LEDGER_PATH_ENV)
-    return Path(env_value) if env_value else DEFAULT_LEDGER_PATH
-
-
-def _load_ledger(path: Path) -> dict[str, int]:
-    """Load {fingerprint: times_imported}. A missing ledger is an empty one."""
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        counts = data["counts"]
-        return {str(k): int(v) for k, v in counts.items()}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise ImporterError(
-            f"The import history file is unreadable: {path} ({exc}). "
-            "Fix or delete it to continue."
-        ) from None
-
-
-def _save_ledger(path: Path, counts: dict[str, int]) -> None:
-    """Write the ledger atomically (temp file + replace)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as temp_file:
-            json.dump({"version": 1, "counts": counts}, temp_file)
-        os.replace(temp_name, path)
-    except BaseException:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
-        raise
-
-
-def handle_duplicates(
-    records: list[dict[str, Any]],
-    transaction_type: TransactionType,
-    ledger_path: Optional[str | Path] = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def handle_duplicates(records: list[dict], record_type: str, user_id: int, api_url: str):
     """
-    Split records into (unique, duplicates) using the local import history.
-
-    A record is a duplicate if an identical one (same user, type, amounts,
-    dates, names) was already sent by an earlier import. Counts are tracked,
-    so if a file legitimately contains the same row twice and was imported
-    once, re-importing it marks both rows as duplicates.
-
-    Repeated rows WITHIN one new file are deliberately kept: spotting
-    suspicious repeated expenses is the fraud engine's job, not the importer's.
+    Split records into (new, already_saved) by asking the backend what this user
+    already has. Used only when skip_existing is on, for accidental re-uploads.
+    By default every record is sent and the fraud engine decides what is suspicious.
     """
-    remaining = dict(_load_ledger(_ledger_path(ledger_path)))
-    unique: list[dict[str, Any]] = []
-    duplicates: list[dict[str, Any]] = []
+    info = RECORD_TYPES[record_type]
+    if not records or not info["list_endpoint"]:
+        return records, []
+    try:
+        response = requests.get(api_url + info["list_endpoint"].format(user_id=user_id), timeout=TIMEOUT_SECONDS)
+        response.raise_for_status()
+        existing = response.json()
+    except (requests.RequestException, ValueError) as error:
+        raise ImporterError(f"Could not check existing records ({error.__class__.__name__}). Is the API running?") from None
+
+    saved = Counter(_match_key(row, info["match_fields"]) for row in existing)
+    new, duplicates = [], []
     for record in records:
-        fingerprint = _fingerprint(record, transaction_type)
-        if remaining.get(fingerprint, 0) > 0:
-            remaining[fingerprint] -= 1
+        key = _match_key(record, info["match_fields"])
+        if saved[key] > 0:
+            saved[key] -= 1
             duplicates.append(record)
         else:
-            unique.append(record)
-    return unique, duplicates
+            new.append(record)
+    return new, duplicates
 
 
-def record_imported(
-    records: list[dict[str, Any]],
-    transaction_type: TransactionType,
-    ledger_path: Optional[str | Path] = None,
-) -> None:
-    """Remember successfully sent records so a later re-import is caught."""
-    if not records:
-        return
-    path = _ledger_path(ledger_path)
-    counts = _load_ledger(path)
+# ---------------------------------------------------------------------------
+# 8. Sending to FastAPI
+# ---------------------------------------------------------------------------
+
+def _error_detail(response: requests.Response) -> str:
+    """The backend's error message (FastAPI puts it under 'detail')."""
+    try:
+        return str(response.json()["detail"])[:300]
+    except (ValueError, KeyError, TypeError):
+        return response.text[:300]
+
+
+def send_to_api(records: list[dict], record_type: str, api_url: str):
+    """
+    POST the records one at a time. Returns (number_sent, error_messages).
+    A record the API rejects is reported and the rest are still sent;
+    if the API cannot be reached at all, sending stops.
+    """
+    url = api_url + RECORD_TYPES[record_type]["endpoint"]
+    sent, errors = 0, []
     for record in records:
-        fingerprint = _fingerprint(record, transaction_type)
-        counts[fingerprint] = counts.get(fingerprint, 0) + 1
-    _save_ledger(path, counts)
+        try:
+            response = requests.post(url, json=record, timeout=TIMEOUT_SECONDS)
+        except requests.RequestException as error:
+            errors.append(f"Could not reach the API at {url} ({error.__class__.__name__}); stopped.")
+            break
+        if response.ok:
+            sent += 1
+        else:
+            errors.append(f"{record} -> HTTP {response.status_code}: {_error_detail(response)}")
+    return sent, errors
 
 
 # ---------------------------------------------------------------------------
-# 9. Shared pipeline + CSV orchestration
+# 9. Putting it all together
 # ---------------------------------------------------------------------------
 
-def _validate_user_id(user_id: Any) -> int:
-    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
-        raise ImporterError("user_id must be a positive integer.")
-    return user_id
-
-
-def process_dataframe(
-    df: pd.DataFrame,
-    source_path: str | Path,
-    user_id: int,
-    *,
-    forced_type: Optional[TransactionType] = None,
-    dry_run: bool = False,
-    strict: bool = False,
-    check_duplicates: bool = True,
-    api_base_url: Optional[str] = None,
-    ledger_path: Optional[str | Path] = None,
-    rejected_out: Optional[str | Path] = None,
-) -> ImportSummary:
+def process_dataframe(df: pd.DataFrame, file_path, user_id: int, dry_run: bool = False,
+                      skip_existing: bool = False, api_base_url: str = None) -> ImportSummary:
     """
-    Run everything AFTER reading; shared by the CSV and Excel importers.
-
-    Options:
-        forced_type       skip type detection and use this type.
-        dry_run           validate and convert, but send nothing and record nothing.
-        strict            if ANY row is invalid, send nothing (all-or-nothing).
-        check_duplicates  skip records already imported earlier (default on).
-        api_base_url      override the FastAPI base URL.
-        ledger_path       override where import history is kept.
-        rejected_out      write rejected rows to this CSV for fixing.
-
-    File-level problems raise ImporterError. Row-level problems never raise;
-    they are reported in the returned ImportSummary.
+    Everything after reading the file; shared by the CSV, Excel and upload paths.
+    dry_run        check the file but contact no API and send nothing.
+    skip_existing  do not send records the backend already has (income/expense only).
+    Row problems are reported in the summary; file problems raise ImporterError.
     """
-    _validate_user_id(user_id)
-    summary = ImportSummary(file_path=str(source_path), user_id=user_id, dry_run=dry_run)
+    if not isinstance(user_id, int) or user_id <= 0:
+        raise ImporterError("user_id must be a positive whole number.")
+    api_url = (api_base_url or os.environ.get(API_URL_ENV) or DEFAULT_API_URL).rstrip("/")
 
     df = clean_dataframe(df)
-    summary.total_rows = len(df)
+    if df.empty:
+        raise ImporterError("The file has no data rows.")
+    record_type = detect_transaction_type(df)
+    summary = ImportSummary(str(file_path), record_type, dry_run=dry_run, total_rows=len(df))
 
-    transaction_type = forced_type or detect_transaction_type(df)
-    summary.transaction_type = transaction_type
-
-    missing = validate_columns(df, transaction_type)
+    missing = validate_columns(df, record_type)
     if missing:
-        summary.errors = [ValidationError(0, c, "Required column is missing") for c in missing]
-        summary.invalid_count = summary.total_rows
-        summary.status = STATUS_REJECTED
+        summary.errors = [ValidationError(0, column, "required column is missing") for column in missing]
+        summary.status = REJECTED
         summary.message = "Missing required column(s): " + ", ".join(missing)
         return summary
 
-    valid_df, invalid_df, errors = split_valid_invalid(df, transaction_type)
-    summary.valid_count = len(valid_df)
-    summary.invalid_count = len(invalid_df)
-    summary.errors = errors
-
-    if rejected_out and not invalid_df.empty:
-        summary.rejected_file = str(export_rejected_rows(invalid_df, rejected_out))
-
-    if strict and summary.invalid_count:
-        summary.status = STATUS_REJECTED
-        summary.message = (
-            f"Strict mode: {summary.invalid_count} invalid row(s) found, nothing was sent."
-        )
-        return summary
-
-    records = convert_to_internal_format(valid_df, transaction_type, user_id)
-
-    if check_duplicates:
-        records, duplicates = handle_duplicates(records, transaction_type, ledger_path)
-        summary.duplicate_count = len(duplicates)
+    valid_df, invalid_df, summary.errors = split_valid_invalid(df, record_type)
+    summary.valid_count, summary.invalid_count = len(valid_df), len(invalid_df)
+    records = convert_to_internal_format(valid_df, record_type, user_id)
 
     if dry_run:
-        summary.status = STATUS_DRY_RUN
-        summary.message = (
-            f"Dry run: {len(records)} record(s) would be sent, "
-            f"{summary.duplicate_count} duplicate(s) skipped, "
-            f"{summary.invalid_count} row(s) rejected."
-        )
+        summary.status = DRY_RUN
+        summary.message = f"Dry run: {len(records)} record(s) would be sent, {summary.invalid_count} rejected."
         return summary
 
+    if skip_existing:
+        records, duplicates = handle_duplicates(records, record_type, user_id, api_url)
+        summary.duplicate_count = len(duplicates)
     if not records:
-        if summary.valid_count == 0:
-            summary.status = STATUS_FAILED
-            summary.message = "No valid rows to import."
-        else:
-            summary.status = STATUS_NO_NEW_RECORDS
-            summary.message = "All valid rows were already imported earlier."
+        summary.status = NO_NEW_RECORDS if summary.valid_count else FAILED
+        summary.message = "Nothing new to import." if summary.valid_count else "No valid rows to import."
         return summary
 
-    result = send_to_api(records, transaction_type, api_base_url=api_base_url)
-    record_imported(result.sent, transaction_type, ledger_path)
-
-    summary.sent_count = len(result.sent)
-    summary.failed_count = len(result.failed) + len(result.not_attempted)
-    summary.send_errors = [
-        f"{json.dumps(f.record, sort_keys=True)} -> {f.message}" for f in result.failed
-    ]
-
+    summary.sent_count, summary.send_errors = send_to_api(records, record_type, api_url)
+    summary.message = f"Sent {summary.sent_count} of {len(records)} record(s)."
+    if summary.send_errors:
+        summary.message += " " + summary.send_errors[0][:200]
     if summary.sent_count == 0:
-        summary.status = STATUS_FAILED
-    elif summary.invalid_count or summary.failed_count:
-        summary.status = STATUS_PARTIAL
+        summary.status = FAILED
+    elif summary.invalid_count or summary.send_errors:
+        summary.status = PARTIAL
     else:
-        summary.status = STATUS_SUCCESS
-
-    parts = [f"Sent {summary.sent_count} of {len(records)} record(s)."]
-    if result.aborted_reason:
-        parts.append(f"Stopped early: {result.aborted_reason}.")
-    summary.message = " ".join(parts)
+        summary.status = SUCCESS
     return summary
 
 
-def import_csv(file_path: str | Path, user_id: int, **options: Any) -> ImportSummary:
-    """
-    Run the full import workflow for one CSV file.
-
-    options are passed to process_dataframe() (forced_type, dry_run, strict,
-    check_duplicates, api_base_url, ledger_path, rejected_out).
-    Raises ImporterError for file-level problems.
-    """
+def import_csv(file_path, user_id: int, dry_run: bool = False,
+               skip_existing: bool = False, api_base_url: str = None) -> ImportSummary:
+    """Import one CSV file for the given user."""
     df = read_csv_file(file_path)
-    return process_dataframe(df, file_path, user_id, **options)
+    return process_dataframe(df, file_path, user_id, dry_run, skip_existing, api_base_url)
+
+
+def process_file_stream(file_bytes: bytes, filename: str, user_id: int,
+                        api_base_url: str = None) -> ImportSummary:
+    """Import a file held in memory. Called by the web upload route (POST /api/financial/upload)."""
+    name = filename.lower()
+    if name.endswith(".csv"):
+        df = read_csv_file(io.BytesIO(file_bytes))
+    elif name.endswith((".xlsx", ".xlsm", ".xls")):
+        from data_input.importers.excel_importer import read_excel_file
+        df = read_excel_file(io.BytesIO(file_bytes))
+    elif name.endswith(".pdf"):
+        from data_input.importers.pdf_importer import parse_pdf_statement
+        df = parse_pdf_statement(file_bytes)
+    else:
+        raise ImporterError(f"Unsupported file type: {filename}. Use .csv, .xlsx, .xls or .pdf")
+    return process_dataframe(df, filename, user_id, api_base_url=api_base_url)
 
 
 # ---------------------------------------------------------------------------
-# Command-line interface (shared with excel_importer.py)
+# Command line (also used by excel_importer.py)
 # ---------------------------------------------------------------------------
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the command-line options shared by the CSV and Excel importers."""
-    parser.add_argument("--user-id", type=int,
-                        help="ID of the TaxSaint user the records belong to (required)")
-    parser.add_argument("--type", dest="forced_type",
-                        choices=[t.value for t in TransactionType],
-                        help="transaction type (default: detect from the columns)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="validate only; send nothing")
-    parser.add_argument("--strict", action="store_true",
-                        help="send nothing if any row is invalid")
-    parser.add_argument("--no-duplicate-check", action="store_true",
-                        help="do not skip records that were imported before")
-    parser.add_argument("--rejected-out", metavar="PATH",
-                        help="write rejected rows to this CSV file")
-    parser.add_argument("--api-url", metavar="URL",
-                        help=f"FastAPI base URL (default: ${API_BASE_URL_ENV} or {DEFAULT_API_BASE_URL})")
-    parser.add_argument("--ledger", metavar="PATH",
-                        help="where to keep the import history")
-
-
-def options_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    """Convert parsed command-line arguments into process_dataframe() options."""
-    return {
-        "forced_type": TransactionType(args.forced_type) if args.forced_type else None,
-        "dry_run": args.dry_run,
-        "strict": args.strict,
-        "check_duplicates": not args.no_duplicate_check,
-        "api_base_url": args.api_url,
-        "ledger_path": args.ledger,
-        "rejected_out": args.rejected_out,
-    }
+def make_parser(description: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("file", help="path to the file to import")
+    parser.add_argument("--user-id", type=int, required=True, help="user the records belong to")
+    parser.add_argument("--dry-run", action="store_true", help="check the file only; send nothing")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="do not send records the backend already has (accidental re-upload)")
+    parser.add_argument("--api-url", help=f"backend URL (default: ${API_URL_ENV} or {DEFAULT_API_URL})")
+    return parser
 
 
 def print_summary(summary: ImportSummary, max_errors: int = 20) -> None:
-    """Print a human-readable import summary."""
-    kind = summary.transaction_type.value if summary.transaction_type else "unknown"
-    print(f"File:        {summary.file_path}")
-    print(f"Type:        {kind}")
-    print(f"User ID:     {summary.user_id}")
+    print(f"File:        {summary.file}")
+    print(f"Record type: {summary.transaction_type}")
     print(f"Status:      {summary.status.upper()}")
     print(f"Rows read:   {summary.total_rows}")
     print(f"Valid:       {summary.valid_count}")
     print(f"Rejected:    {summary.invalid_count}")
-    print(f"Duplicates:  {summary.duplicate_count}")
+    print(f"Skipped:     {summary.duplicate_count}")
     print(f"Sent:        {summary.sent_count}")
-    print(f"Send failed: {summary.failed_count}")
-    if summary.rejected_file:
-        print(f"Rejected rows written to: {summary.rejected_file}")
     if summary.message:
         print(summary.message)
     for error in summary.errors[:max_errors]:
-        where = f"row {error.row_index}" if error.row_index else "file"
-        column = f", {error.column}" if error.column else ""
-        print(f"  [{where}{column}] {error.message}")
+        where = f"row {error.row}" if error.row else "file"
+        print(f"  [{where}] {error.column}: {error.message}")
     if len(summary.errors) > max_errors:
-        print(f"  ... and {len(summary.errors) - max_errors} more validation error(s)")
+        print(f"  ... and {len(summary.errors) - max_errors} more")
     for message in summary.send_errors[:max_errors]:
-        print(f"  [send] {message}")
+        print(f"  [send failed] {message}")
 
 
-def exit_code_for(summary: ImportSummary) -> int:
-    """0 = fine, 1 = problems reported in the summary."""
-    if summary.status == STATUS_DRY_RUN:
-        return 1 if summary.invalid_count else 0
-    return 0 if summary.status in (STATUS_SUCCESS, STATUS_NO_NEW_RECORDS) else 1
-
-
-def process_file_stream(
-    file_bytes: bytes,
-    filename: str,
-    user_id: int,
-    api_base_url: Optional[str] = None,
-) -> ImportSummary:
-    """
-    In-memory file stream ingestion for web uploads.
-    Supports CSV and Excel without touching local temporary files on disk.
-    """
-    import io
-    name_lower = filename.lower()
-    if name_lower.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
-    elif any(name_lower.endswith(ext) for ext in (".xlsx", ".xls", ".xlsm")):
-        df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
-    elif name_lower.endswith(".pdf"):
-        from data_input.importers.pdf_importer import parse_pdf_statement
-        df = parse_pdf_statement(file_bytes)
-    else:
-        raise ImporterError(f"Unsupported file type: {filename}. Supported formats are .csv, .xlsx, .xls, .pdf")
-
-    return process_dataframe(
-        df,
-        source_path=filename,
-        user_id=user_id,
-        api_base_url=api_base_url,
-    )
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    """Command-line entry point for CSV files. Returns the process exit code."""
-    parser = argparse.ArgumentParser(description="Import a CSV of income, expense or bank transactions into TaxSaint.")
-    parser.add_argument("file", help="path to the .csv file")
-    add_common_arguments(parser)
-    args = parser.parse_args(argv)
-    if args.user_id is None:
-        parser.error("--user-id is required")
-
+def run_cli(do_import) -> int:
+    """Run an import and print the result. Exit code: 0 = clean, 1 = problems, 2 = failed."""
     try:
-        summary = import_csv(args.file, args.user_id, **options_from_args(args))
-    except ImporterError as exc:
-        print(f"Import failed: {exc}", file=sys.stderr)
+        summary = do_import()
+    except ImporterError as error:
+        print(f"Import failed: {error}", file=sys.stderr)
         return 2
     print_summary(summary)
-    return exit_code_for(summary)
+    clean = summary.status in (SUCCESS, NO_NEW_RECORDS) or (summary.status == DRY_RUN and not summary.invalid_count)
+    return 0 if clean else 1
+
+
+def main(argv=None) -> int:
+    args = make_parser("Import a CSV of income, expense or bank transactions.").parse_args(argv)
+    return run_cli(lambda: import_csv(args.file, args.user_id, args.dry_run, args.skip_existing, args.api_url))
 
 
 if __name__ == "__main__":
